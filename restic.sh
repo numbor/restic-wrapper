@@ -323,6 +323,76 @@ init_all()
 	fi
 }
 
+# Function to list snapshots of a specific repository
+list_repo_snapshots()
+{
+	local  repo_name="$1"
+	if  [ -z "$repo_name" ]; then
+		echo     "Error: Repository name not provided"
+		exit     1
+	fi
+
+	# Extract repository configuration
+	local  repo_config
+	repo_config=$( jq -r --arg name "$repo_name" '.repositories[] | select(.name == $name)' "$REPOS_FILE")
+
+	if  [ -z "$repo_config" ]; then
+		echo     "Error: Repository '$repo_name' not found"
+		exit     1
+	fi
+
+	# Extract values from repo configuration
+	local  destination
+	local  password
+
+	destination=$( echo "$repo_config" | jq -r '.destination')
+	password=$( echo "$repo_config" | jq -r '.password')
+
+	# Set password
+	export  RESTIC_PASSWORD="$password"
+
+	# Print repository header
+	echo  "📦 Repository: \033[1;36m$repo_name\033[0m"
+	echo  "   └─ 🔗 Destination: $destination"
+	echo  "   └─ 📊 Snapshots:"
+	echo
+
+	# List snapshots
+	if  ! restic -r "$destination" snapshots; then
+		echo     "❌ Failed to list snapshots for repository: $repo_name"
+		return     1
+	fi
+	echo
+	return  0
+}
+
+# Function to list snapshots of all repositories
+list_all_snapshots()
+{
+	echo  "🔄 Listing snapshots from all repositories..."
+	echo  "==========================================="
+	echo
+
+	local  total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
+	local  current=0
+	local  failed=0
+
+	# Iterate through all repositories
+	jq  -r '.repositories[] | .name' "$REPOS_FILE" | while read -r repo_name; do
+		current=$((current + 1))
+		if     ! list_repo_snapshots "$repo_name"; then
+			failed=$((failed + 1))
+		fi
+	done
+
+	if  [ $failed -eq 0 ]; then
+		echo     "✅ Successfully listed all snapshots!"
+	else
+		echo     "⚠️  Listing completed with $failed failures."
+		return     1
+	fi
+}
+
 # Main command handler
 case "$1" in
 	"install")
@@ -330,22 +400,26 @@ case "$1" in
 		;;
 	"init")
 		read_repos
-		if [ -z "$2" ]; then
-			# If no repository specified, initialize all
+		if     [ -z "$2" ]; then
 			init_all
 		else
-			# Initialize specific repository
-			init_repo "$2"
+			init_repo        "$2"
 		fi
 		;;
 	"backup")
 		read_repos
-		if [ -z "$2" ]; then
-			# If no repository specified, backup all
+		if     [ -z "$2" ]; then
 			backup_all
 		else
-			# Backup specific repository
-			backup_repo "$2"
+			backup_repo        "$2"
+		fi
+		;;
+	"list")
+		read_repos
+		if     [ -z "$2" ]; then
+			list_all_snapshots
+		else
+			list_repo_snapshots        "$2"
 		fi
 		;;
 	"show")
@@ -353,12 +427,13 @@ case "$1" in
 		show_repos
 		;;
 	*)
-		echo "Usage: $0 [command]"
-		echo "Available commands:"
-		echo "  install              - Install this script and create config files"
-		echo "  init [repo-name]     - Initialize all repositories or a specific one if name provided"
-		echo "  backup [repo-name]   - Backup all repositories or a specific one if name provided"
-		echo "  show                 - Show all configured repositories"
-		exit 1
+		echo     "Usage: $0 [command]"
+		echo     "Available commands:"
+		echo     "  install              - Install this script and create config files"
+		echo     "  init [repo-name]     - Initialize all repositories or a specific one if name provided"
+		echo     "  backup [repo-name]   - Backup all repositories or a specific one if name provided"
+		echo     "  list [repo-name]     - List snapshots from all repositories or a specific one"
+		echo     "  show                 - Show all configured repositories"
+		exit     1
 		;;
 esac
