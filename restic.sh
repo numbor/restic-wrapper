@@ -486,35 +486,143 @@ restore_repo()
 	return 0
 }
 
+# Function to select schedule with arrow keys
+select_schedule()
+{
+	local options=(
+		"0 2 * * *|Ogni giorno alle 2:00"
+		"0 */6 * * *|Ogni 6 ore"
+		"0 */12 * * *|Ogni 12 ore"
+		"0 2 * * 0|Ogni domenica alle 2:00"
+		"0 2 1 * *|Il primo del mese alle 2:00"
+		"0 2 */2 * *|Ogni 2 giorni alle 2:00"
+		"0 2 * * 1-5|Dal lunedì al venerdì alle 2:00"
+		"custom|Schedulazione personalizzata"
+	)
+	local selected=0
+	local key
+	schedule=""
+
+	# Nascondi il cursore
+	echo -e "\e[?25l"
+
+	while true; do
+		# Mostra header
+		echo
+		echo "🕒 Seleziona la schedulazione con ↑↓ e premi INVIO per confermare"
+		echo "=================================================="
+
+		# Mostra le opzioni con descrizioni più chiare
+		echo
+		for i in "${!options[@]}"; do
+			if [ $i -eq $selected ]; then
+				printf "\033[1;36m▶ %-40s\033[0m\n" "${options[$i]#*|}"
+			else
+				printf "  %-40s\n" "${options[$i]#*|}"
+			fi
+		done
+		echo
+		echo "Usa ↑↓ per muoverti e premi INVIO per selezionare"
+
+		# Leggi il tasto premuto
+		read -rsn1 key
+		case "$key" in
+			$'\x1B') # ESC sequence
+				read -rsn2 key
+				case "$key" in
+					"[A") # Up arrow
+						[ $selected -gt 0 ] && selected=$((selected - 1))
+						;;
+					"[B") # Down arrow
+						[ $selected -lt $((${#options[@]} - 1)) ] && selected=$((selected + 1))
+						;;
+				esac
+				;;
+			"") # Enter key
+				schedule="${options[$selected]%|*}"
+				break
+				;;
+		esac
+	done
+
+	# Mostra il cursore
+	echo -e "\e[?25h"
+
+	# Se è stata selezionata l'opzione personalizzata
+	if [ "$schedule" = "custom" ]; then
+		echo
+		echo "Inserisci la schedulazione personalizzata (formato crontab):"
+		echo -n "> "
+		read -r schedule
+	fi
+}
+
 # Function to manage crontab scheduling
 manage_crontab()
 {
-	local default_schedule="0 2 * * *" # Default: ogni giorno alle 2:00
-	local schedule="$default_schedule"
 	local script_path="/usr/local/bin/restic.sh"
+	local schedule
+	local mode="$1"
 
 	echo "🕒 Configurazione Backup Automatico"
 	echo "=================================="
 	echo
-	echo "Schedulazione attuale: $schedule (ogni giorno alle 2:00)"
-	echo
-	echo "Vuoi modificare la schedulazione? [s/N]"
-	read -r change_schedule
 
-	if [[ "$change_schedule" =~ ^[Ss]$ ]]; then
+	if [ "$mode" = "-s" ]; then
+		echo "📋 Schedulazioni di backup attuali:"
 		echo
-		echo "Inserisci la nuova schedulazione (formato crontab):"
-		echo "Esempi:"
-		echo "  0 2 * * *    = Ogni giorno alle 2:00"
-		echo "  0 */6 * * *  = Ogni 6 ore"
-		echo "  0 2 * * 0    = Ogni domenica alle 2:00"
-		echo "  0 2 1 * *    = Il primo giorno del mese alle 2:00"
-		echo -n "> "
-		read -r new_schedule
-		if [[ -n "$new_schedule" ]]; then
-			schedule="$new_schedule"
+
+		# Leggi il crontab attuale
+		local current_crontab
+		current_crontab=$(crontab -l 2> /dev/null || echo "")
+
+		# Filtra e mostra solo le righe relative a restic.sh
+		local restic_schedules
+		restic_schedules=$(echo "$current_crontab" | grep "restic\.sh backup" || echo "")
+
+		if [ -z "$restic_schedules" ]; then
+			echo "Nessuna schedulazione di backup configurata."
+		else
+			echo "$restic_schedules" | while IFS= read -r line; do
+				local schedule_part=${line%restic.sh*}
+				echo "🔄 $schedule_part"
+				echo "   └─ Comando: $line"
+				echo
+			done
 		fi
+		return 0
+	elif [ "$mode" = "-d" ]; then
+		echo "⚠️  Rimozione delle schedulazioni di backup"
+		echo
+		echo "Vuoi rimuovere tutte le schedulazioni di backup? [s/N]"
+		read -r remove_cron
+
+		if [[ "$remove_cron" =~ ^[Ss]$ ]]; then
+			# Leggi il crontab attuale
+			local current_crontab
+			current_crontab=$(crontab -l 2> /dev/null || echo "")
+
+			# Rimuovi tutte le pianificazioni di restic.sh
+			local new_crontab
+			new_crontab=$(echo "$current_crontab" | grep -v "restic\.sh backup")
+
+			# Installa il nuovo crontab
+			echo "$new_crontab" | crontab -
+
+			if [ $? -eq 0 ]; then
+				echo "✅ Schedulazioni rimosse con successo!"
+			else
+				echo "❌ Errore durante la rimozione delle schedulazioni"
+				return 1
+			fi
+		else
+			echo "Rimozione annullata"
+		fi
+		return 0
 	fi
+
+	# Seleziona la schedulazione
+	select_schedule
 
 	# Crea il comando crontab
 	local cron_cmd="$schedule $script_path backup"
@@ -550,6 +658,26 @@ manage_crontab()
 	else
 		echo "Installazione annullata"
 	fi
+}
+
+# Function to show usage help
+show_usage()
+{
+	echo "Utilizzo: restic.sh <comando> [opzioni]"
+	echo
+	echo "Comandi:"
+	echo "  install              Installa lo script e i file di configurazione"
+	echo "  init                Inizializza un nuovo repository"
+	echo "  backup              Esegue il backup secondo la configurazione"
+	echo "  restore [file]      Ripristina i file da un backup"
+	echo "  show                Mostra la configurazione del repository"
+	echo "  list [-v]           Mostra gli snapshot (-v per dettagli)"
+	echo "  crontab [-s|-d]     Gestisce la schedulazione dei backup"
+	echo "                      (-s per mostrare le schedulazioni attuali)"
+	echo "                      (-d per rimuovere tutte le schedulazioni)"
+	echo "  -h, --help         Mostra questo messaggio"
+	echo
+	exit 1
 }
 
 # Main command handler
@@ -610,7 +738,7 @@ case "$1" in
 		restore_repo "$repo_name" "$snapshot_id" "${files[@]}"
 		;;
 	"crontab")
-		manage_crontab
+		manage_crontab "$2"
 		;;
 	"list")
 		read_repos
@@ -643,17 +771,6 @@ case "$1" in
 		show_repos
 		;;
 	*)
-		echo "Usage: $0 [command]"
-		echo "Available commands:"
-		echo "  install                    - Install this script and create config files"
-		echo "  init [repo-name]           - Initialize all repositories or a specific one if name provided"
-		echo "  backup [repo-name]         - Backup all repositories or a specific one if name provided"
-		echo "  restore <repo-name> <snapshot-id> [-f file1 file2 ...]"
-		echo "                             - Restore entire snapshot or specific files from a repository"
-		echo "  list [-v] [repo-name]      - List snapshots from all repositories or a specific one"
-		echo "                               Use -v for verbose output including contents"
-		echo "  show                       - Show all configured repositories"
-		echo "  crontab                    - Configure and install automatic backup schedule"
-		exit 1
+		show_usage
 		;;
 esac
