@@ -181,7 +181,7 @@ show_repos()
 		dest=$(echo "$repo" | jq -r '.destination')
 
 		# Print repository header
-		echo "📦 Repository: \033[1;36m$name\033[0m"
+		echo -e "📦 Repository: \033[1;36m$name\033[0m"
 		echo "   └─ 🔗 Destination: $dest"
 
 		# Print paths
@@ -354,7 +354,7 @@ list_repo_snapshots()
 	export RESTIC_PASSWORD="$password"
 
 	# Print repository header
-	echo "📦 Repository: \033[1;36m$repo_name\033[0m"
+	echo -e "📦 Repository: \033[1;36m$repo_name\033[0m"
 	echo "   └─ 🔗 Destination: $destination"
 	echo "   └─ 📊 Snapshots:"
 	echo
