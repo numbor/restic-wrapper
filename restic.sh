@@ -142,8 +142,30 @@ backup_repo()
 	fi
 }
 
+# Function to backup all repositories
+backup_all()
+{
+	echo "🔄 Starting backup of all repositories..."
+	echo "========================================="
+	echo
+
+	local total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
+	local current=0
+
+	# Iterate through all repositories
+	jq -r '.repositories[] | .name' "$REPOS_FILE" | while read -r repo_name; do
+		current=$((current + 1))
+		echo "📦 Processing repository ($current/$total_repos): \033[1;36m$repo_name\033[0m"
+		echo "-------------------------------------------"
+		backup_repo "$repo_name"
+		echo
+	done
+
+	echo "✅ Backup of all repositories completed!"
+}
+
 # Function to list all repositories
-list_repos()
+show_repos()
 {
 	echo
 	echo "🗄️  Configured Backup Repositories"
@@ -233,31 +255,110 @@ EOL
 	fi
 }
 
+# Function to initialize a specific repository
+init_repo()
+{
+	local repo_name="$1"
+	if [ -z "$repo_name" ]; then
+		echo "Error: Repository name not provided"
+		exit 1
+	fi
+
+	# Extract repository configuration
+	local repo_config
+	repo_config=$(jq -r --arg name "$repo_name" '.repositories[] | select(.name == $name)' "$REPOS_FILE")
+
+	if [ -z "$repo_config" ]; then
+		echo "Error: Repository '$repo_name' not found"
+		exit 1
+	fi
+
+	# Extract values from repo configuration
+	local destination
+	local password
+
+	destination=$(echo "$repo_config" | jq -r '.destination')
+	password=$(echo "$repo_config" | jq -r '.password')
+
+	# Set password
+	export RESTIC_PASSWORD="$password"
+
+	# Initialize repository
+	echo "Initializing repository: $repo_name"
+	if ! restic -r "$destination" init; then
+		echo "❌ Failed to initialize repository: $repo_name"
+		return 1
+	fi
+	echo "✅ Repository initialized successfully: $repo_name"
+	return 0
+}
+
+# Function to initialize all repositories
+init_all()
+{
+	echo "🔄 Initializing all repositories..."
+	echo "=================================="
+	echo
+
+	local total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
+	local current=0
+	local failed=0
+
+	# Iterate through all repositories
+	jq -r '.repositories[] | .name' "$REPOS_FILE" | while read -r repo_name; do
+		current=$((current + 1))
+		echo "📦 Processing repository ($current/$total_repos): \033[1;36m$repo_name\033[0m"
+		echo "-------------------------------------------"
+		if ! init_repo "$repo_name"; then
+			failed=$((failed + 1))
+		fi
+		echo
+	done
+
+	if [ $failed -eq 0 ]; then
+		echo "✅ All repositories initialized successfully!"
+	else
+		echo "⚠️  Initialization completed with $failed failures."
+		return 1
+	fi
+}
+
 # Main command handler
 case "$1" in
 	"install")
 		install_script
 		;;
+	"init")
+		read_repos
+		if [ -z "$2" ]; then
+			# If no repository specified, initialize all
+			init_all
+		else
+			# Initialize specific repository
+			init_repo "$2"
+		fi
+		;;
 	"backup")
 		read_repos
 		if [ -z "$2" ]; then
-			echo "Error: Please specify a repository name"
-			echo
-			list_repos
-			exit 1
+			# If no repository specified, backup all
+			backup_all
+		else
+			# Backup specific repository
+			backup_repo "$2"
 		fi
-		backup_repo "$2"
 		;;
-	"list")
+	"show")
 		read_repos
-		list_repos
+		show_repos
 		;;
 	*)
 		echo "Usage: $0 [command]"
 		echo "Available commands:"
 		echo "  install              - Install this script and create config files"
-		echo "  backup <repo-name>   - Backup specified repository"
-		echo "  list                 - List all configured repositories"
+		echo "  init [repo-name]     - Initialize all repositories or a specific one if name provided"
+		echo "  backup [repo-name]   - Backup all repositories or a specific one if name provided"
+		echo "  show                 - Show all configured repositories"
 		exit 1
 		;;
 esac
