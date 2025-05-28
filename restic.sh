@@ -417,6 +417,75 @@ list_all_snapshots()
 	fi
 }
 
+# Function to restore a specific repository
+restore_repo()
+{
+	local repo_name="$1"
+	local snapshot_id="$2"
+	local files=("${@:3}") # Get all remaining arguments as files array
+
+	if [ -z "$repo_name" ]; then
+		echo "Error: Repository name not provided"
+		exit 1
+	fi
+
+	if [ -z "$snapshot_id" ]; then
+		echo "Error: Snapshot ID not provided"
+		exit 1
+	fi
+
+	# Extract repository configuration
+	local repo_config
+	repo_config=$(jq -r --arg name "$repo_name" '.repositories[] | select(.name == $name)' "$REPOS_FILE")
+
+	if [ -z "$repo_config" ]; then
+		echo "Error: Repository '$repo_name' not found"
+		exit 1
+	fi
+
+	# Extract values from repo configuration
+	local destination
+	local password
+
+	destination=$(echo "$repo_config" | jq -r '.destination')
+	password=$(echo "$repo_config" | jq -r '.password')
+
+	# Set password
+	export RESTIC_PASSWORD="$password"
+
+	# Create restore command
+	local restore_cmd="restic -r $destination restore $snapshot_id"
+
+	# If files are specified, add them to the command
+	if [ ${#files[@]} -gt 0 ]; then
+		echo "🔄 Restoring specific files from repository: \033[1;36m$repo_name\033[0m"
+		echo "   └─ 🔗 Destination: $destination"
+		echo "   └─ 📊 Snapshot ID: $snapshot_id"
+		echo "   └─ 📂 Files to restore:"
+		for file in "${files[@]}"; do
+			echo "      └─ $file"
+			restore_cmd="$restore_cmd --include '$file'"
+		done
+	else
+		echo "🔄 Restoring entire snapshot from repository: \033[1;36m$repo_name\033[0m"
+		echo "   └─ 🔗 Destination: $destination"
+		echo "   └─ 📊 Snapshot ID: $snapshot_id"
+	fi
+
+	# Add target directory (current directory by default)
+	restore_cmd="$restore_cmd --target ."
+
+	echo
+	echo "Starting restore operation..."
+	if ! eval "$restore_cmd"; then
+		echo "❌ Failed to restore from repository: $repo_name"
+		return 1
+	fi
+
+	echo "✅ Restore completed successfully"
+	return 0
+}
+
 # Main command handler
 case "$1" in
 	"install")
@@ -424,19 +493,55 @@ case "$1" in
 		;;
 	"init")
 		read_repos
-		if   [ -z "$2" ]; then
+		if [ -z "$2" ]; then
 			init_all
 		else
-			init_repo      "$2"
+			init_repo "$2"
 		fi
 		;;
 	"backup")
 		read_repos
-		if   [ -z "$2" ]; then
+		if [ -z "$2" ]; then
 			backup_all
 		else
-			backup_repo      "$2"
+			backup_repo "$2"
 		fi
+		;;
+	"restore")
+		read_repos
+		repo_name=""
+		snapshot_id=""
+		files=()
+
+		# Parse arguments
+		shift # skip the 'restore' command
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+				-f | --file)
+					shift
+					while [[ $# -gt 0 ]] && [[ $1 != -* ]]; do
+						files+=("$1")
+						shift
+					done
+					;;
+				*)
+					if [ -z "$repo_name" ]; then
+						repo_name="$1"
+					elif [ -z "$snapshot_id" ]; then
+						snapshot_id="$1"
+					fi
+					shift
+					;;
+			esac
+		done
+
+		if [ -z "$repo_name" ] || [ -z "$snapshot_id" ]; then
+			echo "Error: Repository name and snapshot ID are required"
+			echo "Usage: $0 restore <repo-name> <snapshot-id> [-f file1 file2 ...]"
+			exit 1
+		fi
+
+		restore_repo "$repo_name" "$snapshot_id" "${files[@]}"
 		;;
 	"list")
 		read_repos
@@ -469,14 +574,16 @@ case "$1" in
 		show_repos
 		;;
 	*)
-		echo   "Usage: $0 [command]"
-		echo   "Available commands:"
-		echo   "  install                    - Install this script and create config files"
-		echo   "  init [repo-name]           - Initialize all repositories or a specific one if name provided"
-		echo   "  backup [repo-name]         - Backup all repositories or a specific one if name provided"
-		echo   "  list [-v] [repo-name]      - List snapshots from all repositories or a specific one"
-		echo   "                               Use -v for verbose output including contents"
-		echo   "  show                       - Show all configured repositories"
-		exit   1
+		echo "Usage: $0 [command]"
+		echo "Available commands:"
+		echo "  install                    - Install this script and create config files"
+		echo "  init [repo-name]           - Initialize all repositories or a specific one if name provided"
+		echo "  backup [repo-name]         - Backup all repositories or a specific one if name provided"
+		echo "  restore <repo-name> <snapshot-id> [-f file1 file2 ...]"
+		echo "                             - Restore entire snapshot or specific files from a repository"
+		echo "  list [-v] [repo-name]      - List snapshots from all repositories or a specific one"
+		echo "                               Use -v for verbose output including contents"
+		echo "  show                       - Show all configured repositories"
+		exit 1
 		;;
 esac
