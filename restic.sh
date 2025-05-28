@@ -486,6 +486,72 @@ restore_repo()
 	return 0
 }
 
+# Function to manage crontab scheduling
+manage_crontab()
+{
+	local default_schedule="0 2 * * *" # Default: ogni giorno alle 2:00
+	local schedule="$default_schedule"
+	local script_path="/usr/local/bin/restic.sh"
+
+	echo "🕒 Configurazione Backup Automatico"
+	echo "=================================="
+	echo
+	echo "Schedulazione attuale: $schedule (ogni giorno alle 2:00)"
+	echo
+	echo "Vuoi modificare la schedulazione? [s/N]"
+	read -r change_schedule
+
+	if [[ "$change_schedule" =~ ^[Ss]$ ]]; then
+		echo
+		echo "Inserisci la nuova schedulazione (formato crontab):"
+		echo "Esempi:"
+		echo "  0 2 * * *    = Ogni giorno alle 2:00"
+		echo "  0 */6 * * *  = Ogni 6 ore"
+		echo "  0 2 * * 0    = Ogni domenica alle 2:00"
+		echo "  0 2 1 * *    = Il primo giorno del mese alle 2:00"
+		echo -n "> "
+		read -r new_schedule
+		if [[ -n "$new_schedule" ]]; then
+			schedule="$new_schedule"
+		fi
+	fi
+
+	# Crea il comando crontab
+	local cron_cmd="$schedule $script_path backup"
+
+	echo
+	echo "Il seguente comando verrà aggiunto al crontab:"
+	echo "📅 $cron_cmd"
+	echo
+	echo "Vuoi installare questa schedulazione? [s/N]"
+	read -r install_cron
+
+	if [[ "$install_cron" =~ ^[Ss]$ ]]; then
+		# Leggi il crontab attuale
+		local current_crontab
+		current_crontab=$(crontab -l 2> /dev/null || echo "")
+
+		# Rimuovi eventuali pianificazioni esistenti di restic.sh
+		local new_crontab
+		new_crontab=$(echo "$current_crontab" | grep -v "restic\.sh backup")
+
+		# Aggiungi la nuova pianificazione
+		new_crontab="${new_crontab}${cron_cmd}"
+
+		# Installa il nuovo crontab
+		echo "$new_crontab" | crontab -
+
+		if [ $? -eq 0 ]; then
+			echo "✅ Schedulazione installata con successo!"
+		else
+			echo "❌ Errore durante l'installazione della schedulazione"
+			return 1
+		fi
+	else
+		echo "Installazione annullata"
+	fi
+}
+
 # Main command handler
 case "$1" in
 	"install")
@@ -543,6 +609,9 @@ case "$1" in
 
 		restore_repo "$repo_name" "$snapshot_id" "${files[@]}"
 		;;
+	"crontab")
+		manage_crontab
+		;;
 	"list")
 		read_repos
 		verbose="false"
@@ -584,6 +653,7 @@ case "$1" in
 		echo "  list [-v] [repo-name]      - List snapshots from all repositories or a specific one"
 		echo "                               Use -v for verbose output including contents"
 		echo "  show                       - Show all configured repositories"
+		echo "  crontab                    - Configure and install automatic backup schedule"
 		exit 1
 		;;
 esac
