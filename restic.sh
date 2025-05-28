@@ -326,70 +326,94 @@ init_all()
 # Function to list snapshots of a specific repository
 list_repo_snapshots()
 {
-	local  repo_name="$1"
-	if  [ -z "$repo_name" ]; then
-		echo     "Error: Repository name not provided"
-		exit     1
+	local repo_name="$1"
+	local verbose="$2"
+
+	if [ -z "$repo_name" ]; then
+		echo "Error: Repository name not provided"
+		exit 1
 	fi
 
 	# Extract repository configuration
-	local  repo_config
-	repo_config=$( jq -r --arg name "$repo_name" '.repositories[] | select(.name == $name)' "$REPOS_FILE")
+	local repo_config
+	repo_config=$(jq -r --arg name "$repo_name" '.repositories[] | select(.name == $name)' "$REPOS_FILE")
 
-	if  [ -z "$repo_config" ]; then
-		echo     "Error: Repository '$repo_name' not found"
-		exit     1
+	if [ -z "$repo_config" ]; then
+		echo "Error: Repository '$repo_name' not found"
+		exit 1
 	fi
 
 	# Extract values from repo configuration
-	local  destination
-	local  password
+	local destination
+	local password
 
-	destination=$( echo "$repo_config" | jq -r '.destination')
-	password=$( echo "$repo_config" | jq -r '.password')
+	destination=$(echo "$repo_config" | jq -r '.destination')
+	password=$(echo "$repo_config" | jq -r '.password')
 
 	# Set password
-	export  RESTIC_PASSWORD="$password"
+	export RESTIC_PASSWORD="$password"
 
 	# Print repository header
-	echo  "📦 Repository: \033[1;36m$repo_name\033[0m"
-	echo  "   └─ 🔗 Destination: $destination"
-	echo  "   └─ 📊 Snapshots:"
+	echo "📦 Repository: \033[1;36m$repo_name\033[0m"
+	echo "   └─ 🔗 Destination: $destination"
+	echo "   └─ 📊 Snapshots:"
 	echo
 
-	# List snapshots
-	if  ! restic -r "$destination" snapshots; then
-		echo     "❌ Failed to list snapshots for repository: $repo_name"
-		return     1
+	# List snapshots with different detail levels
+	if [ "$verbose" = "true" ]; then
+		echo "🔍 Detailed snapshot list:"
+		if ! restic -r "$destination" snapshots --verbose; then
+			echo "❌ Failed to list snapshots for repository: $repo_name"
+			return 1
+		fi
+
+		echo -e "\n📋 Latest snapshot contents:"
+		if ! restic -r "$destination" ls latest; then
+			echo "❌ Failed to list contents for repository: $repo_name"
+			return 1
+		fi
+
+		echo -e "\n📊 Repository statistics:"
+		if ! restic -r "$destination" stats; then
+			echo "❌ Failed to get statistics for repository: $repo_name"
+			return 1
+		fi
+	else
+		if ! restic -r "$destination" snapshots; then
+			echo "❌ Failed to list snapshots for repository: $repo_name"
+			return 1
+		fi
 	fi
 	echo
-	return  0
+	return 0
 }
 
 # Function to list snapshots of all repositories
 list_all_snapshots()
 {
-	echo  "🔄 Listing snapshots from all repositories..."
-	echo  "==========================================="
+	local verbose="$1"
+
+	echo "🔄 Listing snapshots from all repositories..."
+	echo "==========================================="
 	echo
 
-	local  total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
-	local  current=0
-	local  failed=0
+	local total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
+	local current=0
+	local failed=0
 
 	# Iterate through all repositories
-	jq  -r '.repositories[] | .name' "$REPOS_FILE" | while read -r repo_name; do
+	jq -r '.repositories[] | .name' "$REPOS_FILE" | while read -r repo_name; do
 		current=$((current + 1))
-		if     ! list_repo_snapshots "$repo_name"; then
+		if ! list_repo_snapshots "$repo_name" "$verbose"; then
 			failed=$((failed + 1))
 		fi
 	done
 
-	if  [ $failed -eq 0 ]; then
-		echo     "✅ Successfully listed all snapshots!"
+	if [ $failed -eq 0 ]; then
+		echo "✅ Successfully listed all snapshots!"
 	else
-		echo     "⚠️  Listing completed with $failed failures."
-		return     1
+		echo "⚠️  Listing completed with $failed failures."
+		return 1
 	fi
 }
 
@@ -400,26 +424,44 @@ case "$1" in
 		;;
 	"init")
 		read_repos
-		if     [ -z "$2" ]; then
+		if   [ -z "$2" ]; then
 			init_all
 		else
-			init_repo        "$2"
+			init_repo      "$2"
 		fi
 		;;
 	"backup")
 		read_repos
-		if     [ -z "$2" ]; then
+		if   [ -z "$2" ]; then
 			backup_all
 		else
-			backup_repo        "$2"
+			backup_repo      "$2"
 		fi
 		;;
 	"list")
 		read_repos
-		if     [ -z "$2" ]; then
-			list_all_snapshots
+		verbose="false"
+		repo_name=""
+
+		# Parse arguments
+		shift # skip the 'list' command
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+				-v | --verbose)
+					verbose="true"
+					shift
+					;;
+				*)
+					repo_name="$1"
+					shift
+					;;
+			esac
+		done
+
+		if [ -z "$repo_name" ]; then
+			list_all_snapshots "$verbose"
 		else
-			list_repo_snapshots        "$2"
+			list_repo_snapshots "$repo_name" "$verbose"
 		fi
 		;;
 	"show")
@@ -427,13 +469,14 @@ case "$1" in
 		show_repos
 		;;
 	*)
-		echo     "Usage: $0 [command]"
-		echo     "Available commands:"
-		echo     "  install              - Install this script and create config files"
-		echo     "  init [repo-name]     - Initialize all repositories or a specific one if name provided"
-		echo     "  backup [repo-name]   - Backup all repositories or a specific one if name provided"
-		echo     "  list [repo-name]     - List snapshots from all repositories or a specific one"
-		echo     "  show                 - Show all configured repositories"
-		exit     1
+		echo   "Usage: $0 [command]"
+		echo   "Available commands:"
+		echo   "  install                    - Install this script and create config files"
+		echo   "  init [repo-name]           - Initialize all repositories or a specific one if name provided"
+		echo   "  backup [repo-name]         - Backup all repositories or a specific one if name provided"
+		echo   "  list [-v] [repo-name]      - List snapshots from all repositories or a specific one"
+		echo   "                               Use -v for verbose output including contents"
+		echo   "  show                       - Show all configured repositories"
+		exit   1
 		;;
 esac
