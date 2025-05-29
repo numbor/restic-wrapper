@@ -7,6 +7,7 @@
 CONFIG_DIR="$HOME/.config"
 CONFIG_FILE="$CONFIG_DIR/restic.ini"
 REPOS_FILE="$CONFIG_DIR/backup-repos.json"
+LOG_FILE="/var/log/restic-backup.log"
 
 # Check if jq is installed
 check_jq_binary()
@@ -624,17 +625,30 @@ manage_crontab()
 	# Seleziona la schedulazione
 	select_schedule
 
-	# Crea il comando crontab
-	local cron_cmd="$schedule $script_path backup"
+	# Crea il comando crontab con logging
+	# Aggiungiamo data e ora all'inizio di ogni log entry
+	local log_cmd='date "+[%Y-%m-%d %H:%M:%S]" >> '"$LOG_FILE"' 2>&1 && '
+	log_cmd+="$script_path backup >> $LOG_FILE 2>&1"
+	local cron_cmd="$schedule $log_cmd"
 
 	echo
 	echo "Il seguente comando verrà aggiunto al crontab:"
 	echo "📅 $cron_cmd"
 	echo
+	echo "L'output del backup verrà salvato in: $LOG_FILE"
+	echo
 	echo "Vuoi installare questa schedulazione? [s/N]"
 	read -r install_cron
 
 	if [[ "$install_cron" =~ ^[Ss]$ ]]; then
+		# Assicurati che il file di log esista e abbia i permessi corretti
+		if [ ! -f "$LOG_FILE" ]; then
+			sudo touch "$LOG_FILE"
+			sudo chown "$(whoami)" "$LOG_FILE"
+			sudo chmod 644 "$LOG_FILE"
+			echo "✅ File di log creato: $LOG_FILE"
+		fi
+
 		# Leggi il crontab attuale
 		local current_crontab
 		current_crontab=$(crontab -l 2> /dev/null || echo "")
@@ -651,6 +665,7 @@ manage_crontab()
 
 		if [ $? -eq 0 ]; then
 			echo "✅ Schedulazione installata con successo!"
+			echo "📝 I log verranno salvati in: $LOG_FILE"
 		else
 			echo "❌ Errore durante l'installazione della schedulazione"
 			return 1
