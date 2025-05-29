@@ -682,11 +682,11 @@ show_usage()
 	echo
 	echo "Comandi:"
 	echo "  install              Installa lo script e i file di configurazione"
-	echo "  config              Configura i repository in modo interattivo"
+	echo "  config [-s]         Configura i repository in modo interattivo"
+	echo "                      (-s per mostrare la configurazione attuale)"
 	echo "  init                Inizializza un nuovo repository"
 	echo "  backup              Esegue il backup secondo la configurazione"
 	echo "  restore [file]      Ripristina i file da un backup"
-	echo "  show                Mostra la configurazione del repository"
 	echo "  list [-v]           Mostra gli snapshot (-v per dettagli)"
 	echo "  crontab [-s|-d]     Gestisce la schedulazione dei backup"
 	echo "                      (-s per mostrare le schedulazioni attuali)"
@@ -699,6 +699,17 @@ show_usage()
 # Function to configure repositories interactively
 configure_repos()
 {
+	local show_only="$1"
+
+	if [ "$show_only" = "-s" ]; then
+		echo
+		echo "🗄️  Configured Backup Repositories"
+		echo "=================================="
+		echo
+		show_repos
+		return 0
+	fi
+
 	echo "📝 Configurazione Repository Restic"
 	echo "================================="
 	echo
@@ -974,7 +985,8 @@ case "$1" in
 		install_script
 		;;
 	"config")
-		configure_repos
+		read_repos
+		configure_repos "$2"
 		;;
 	"init")
 		read_repos
@@ -1056,10 +1068,6 @@ case "$1" in
 		else
 			list_repo_snapshots "$repo_name" "$verbose"
 		fi
-		;;
-	"show")
-		read_repos
-		show_repos
 		;;
 	*)
 		show_usage
