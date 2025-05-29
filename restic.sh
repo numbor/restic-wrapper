@@ -682,6 +682,7 @@ show_usage()
 	echo
 	echo "Comandi:"
 	echo "  install              Installa lo script e i file di configurazione"
+	echo "  config              Configura i repository in modo interattivo"
 	echo "  init                Inizializza un nuovo repository"
 	echo "  backup              Esegue il backup secondo la configurazione"
 	echo "  restore [file]      Ripristina i file da un backup"
@@ -695,10 +696,285 @@ show_usage()
 	exit 1
 }
 
+# Function to configure repositories interactively
+configure_repos()
+{
+	echo "📝 Configurazione Repository Restic"
+	echo "================================="
+	echo
+
+	# Create config directory if it doesn't exist
+	mkdir -p "$CONFIG_DIR"
+
+	# Initialize or load existing repositories
+	local repositories=()
+	if [ -f "$REPOS_FILE" ]; then
+		echo "File di configurazione esistente trovato."
+		echo "Vuoi modificare la configurazione esistente? [s/N]"
+		read -r modify_config
+
+		if [[ "$modify_config" =~ ^[Ss]$ ]]; then
+			repositories=$(jq -r '.repositories' "$REPOS_FILE")
+		else
+			echo "Configurazione annullata"
+			return 0
+		fi
+	fi
+
+	while true; do
+		echo
+		echo "Seleziona un'azione:"
+		echo "1) Aggiungi repository"
+		echo "2) Modifica repository"
+		echo "3) Rimuovi repository"
+		echo "4) Mostra configurazione attuale"
+		echo "5) Salva ed esci"
+		echo "6) Esci senza salvare"
+		echo
+		read -r -p "Scelta [1-6]: " choice
+
+		case "$choice" in
+			1)
+				echo
+				echo "➕ Aggiunta nuovo repository"
+				echo "-------------------------"
+
+				read -r -p "Nome del repository: " name
+				read -r -p "Destinazione (es: sftp:user@host:backup): " destination
+				read -r -s -p "Password: " password
+				echo
+
+				echo "Percorsi da includere nel backup (uno per riga, lascia vuoto per terminare):"
+				paths=()
+				while true; do
+					read -r -p "Percorso: " path
+					[ -z "$path" ] && break
+					paths+=("$path")
+				done
+
+				echo "Pattern da escludere (uno per riga, lascia vuoto per terminare):"
+				excludes=()
+				while true; do
+					read -r -p "Pattern: " exclude
+					[ -z "$exclude" ] && break
+					excludes+=("$exclude")
+				done
+
+				echo "Configurazione policy di retention:"
+				read -r -p "Numero di snapshot recenti da mantenere: " keep_last
+				read -r -p "Numero di snapshot giornalieri da mantenere: " keep_daily
+				read -r -p "Numero di snapshot settimanali da mantenere: " keep_weekly
+				read -r -p "Numero di snapshot mensili da mantenere: " keep_monthly
+
+				# Create new repository JSON
+				new_repo=$(jq -n \
+					--arg name "$name" \
+					--arg dest "$destination" \
+					--arg pwd "$password" \
+					--argjson paths "$(printf '%s\n' "${paths[@]}" | jq -R . | jq -s .)" \
+					--argjson excludes "$(printf '%s\n' "${excludes[@]}" | jq -R . | jq -s .)" \
+					--arg last "${keep_last:-7}" \
+					--arg daily "${keep_daily:-7}" \
+					--arg weekly "${keep_weekly:-4}" \
+					--arg monthly "${keep_monthly:-12}" \
+					'{
+						"name": $name,
+						"destination": $dest,
+						"password": $pwd,
+						"paths": $paths,
+						"exclude": $excludes,
+						"retention": {
+							"last": ($last|tonumber),
+							"daily": ($daily|tonumber),
+							"weekly": ($weekly|tonumber),
+							"monthly": ($monthly|tonumber)
+						}
+					}')
+
+				# Add to repositories array
+				repositories=$(echo "$repositories" | jq '. += ['"$new_repo"']')
+				echo "✅ Repository aggiunto con successo!"
+				;;
+			2)
+				if [ -z "$repositories" ] || [ "$(echo "$repositories" | jq '. | length')" -eq 0 ]; then
+					echo "❌ Nessun repository configurato"
+					continue
+				fi
+
+				echo
+				echo "✏️  Modifica repository"
+				echo "------------------"
+				echo "Repository disponibili:"
+
+				echo "$repositories" | jq -r '.[].name' | nl -v 0
+				read -r -p "Seleziona il numero del repository da modificare: " index
+
+				if [[ "$index" =~ ^[0-9]+$ ]]; then
+					# Ottieni il repository corrente
+					local current_repo=$(echo "$repositories" | jq ".[$index]")
+					if [ -z "$current_repo" ] || [ "$current_repo" = "null" ]; then
+						echo "❌ Repository non trovato"
+						continue
+					fi
+
+					echo
+					echo "Repository selezionato:"
+					echo "$current_repo" | jq .
+					echo
+					echo "Inserisci i nuovi valori (lascia vuoto per mantenere il valore attuale)"
+
+					# Nome
+					local current_name=$(echo "$current_repo" | jq -r '.name')
+					read -r -p "Nome del repository [$current_name]: " name
+					name=${name:-$current_name}
+
+					# Destinazione
+					local current_dest=$(echo "$current_repo" | jq -r '.destination')
+					read -r -p "Destinazione [$current_dest]: " destination
+					destination=${destination:-$current_dest}
+
+					# Password
+					local current_pwd=$(echo "$current_repo" | jq -r '.password')
+					read -r -s -p "Password (premi invio per mantenere quella attuale): " password
+					echo
+					password=${password:-$current_pwd}
+
+					# Percorsi
+					echo "Percorsi attuali:"
+					echo "$current_repo" | jq -r '.paths[]' | nl
+					echo "Inserisci i nuovi percorsi (uno per riga, lascia vuoto per terminare):"
+					echo "Lascia vuoto e premi invio subito per mantenere i percorsi attuali"
+					paths=()
+					while true; do
+						read -r -p "Percorso: " path
+						[ -z "$path" ] && break
+						paths+=("$path")
+					done
+					if [ ${#paths[@]} -eq 0 ]; then
+						paths=($(echo "$current_repo" | jq -r '.paths[]'))
+					fi
+
+					# Esclusioni
+					echo "Pattern di esclusione attuali:"
+					echo "$current_repo" | jq -r '.exclude[]' | nl
+					echo "Inserisci i nuovi pattern (uno per riga, lascia vuoto per terminare):"
+					echo "Lascia vuoto e premi invio subito per mantenere i pattern attuali"
+					excludes=()
+					while true; do
+						read -r -p "Pattern: " exclude
+						[ -z "$exclude" ] && break
+						excludes+=("$exclude")
+					done
+					if [ ${#excludes[@]} -eq 0 ]; then
+						excludes=($(echo "$current_repo" | jq -r '.exclude[]'))
+					fi
+
+					# Policy di retention
+					echo "Policy di retention attuale:"
+					echo "$current_repo" | jq '.retention'
+					echo "Inserisci i nuovi valori (invio per mantenere il valore attuale):"
+
+					local current_last=$(echo "$current_repo" | jq -r '.retention.last')
+					read -r -p "Numero di snapshot recenti da mantenere [$current_last]: " keep_last
+					keep_last=${keep_last:-$current_last}
+
+					local current_daily=$(echo "$current_repo" | jq -r '.retention.daily')
+					read -r -p "Numero di snapshot giornalieri da mantenere [$current_daily]: " keep_daily
+					keep_daily=${keep_daily:-$current_daily}
+
+					local current_weekly=$(echo "$current_repo" | jq -r '.retention.weekly')
+					read -r -p "Numero di snapshot settimanali da mantenere [$current_weekly]: " keep_weekly
+					keep_weekly=${keep_weekly:-$current_weekly}
+
+					local current_monthly=$(echo "$current_repo" | jq -r '.retention.monthly')
+					read -r -p "Numero di snapshot mensili da mantenere [$current_monthly]: " keep_monthly
+					keep_monthly=${keep_monthly:-$current_monthly}
+
+					# Create updated repository JSON
+					local updated_repo=$(jq -n \
+						--arg name "$name" \
+						--arg dest "$destination" \
+						--arg pwd "$password" \
+						--argjson paths "$(printf '%s\n' "${paths[@]}" | jq -R . | jq -s .)" \
+						--argjson excludes "$(printf '%s\n' "${excludes[@]}" | jq -R . | jq -s .)" \
+						--arg last "$keep_last" \
+						--arg daily "$keep_daily" \
+						--arg weekly "$keep_weekly" \
+						--arg monthly "$keep_monthly" \
+						'{
+							"name": $name,
+							"destination": $dest,
+							"password": $pwd,
+							"paths": $paths,
+							"exclude": $excludes,
+							"retention": {
+								"last": ($last|tonumber),
+								"daily": ($daily|tonumber),
+								"weekly": ($weekly|tonumber),
+								"monthly": ($monthly|tonumber)
+							}
+						}')
+
+					# Update repository in the array
+					repositories=$(echo "$repositories" | jq ".[$index] = $updated_repo")
+					echo "✅ Repository aggiornato con successo!"
+				else
+					echo "❌ Selezione non valida"
+				fi
+				;;
+			3)
+				if [ -z "$repositories" ] || [ "$(echo "$repositories" | jq '. | length')" -eq 0 ]; then
+					echo "❌ Nessun repository configurato"
+					continue
+				fi
+
+				echo
+				echo "➖ Rimozione repository"
+				echo "---------------------"
+				echo "Repository disponibili:"
+
+				echo "$repositories" | jq -r '.[].name' | nl -v 0
+				read -r -p "Seleziona il numero del repository da rimuovere: " index
+
+				if [[ "$index" =~ ^[0-9]+$ ]]; then
+					repositories=$(echo "$repositories" | jq "del(.[$index])")
+					echo "✅ Repository rimosso con successo!"
+				else
+					echo "❌ Selezione non valida"
+				fi
+				;;
+			4)
+				echo
+				echo "👀 Configurazione attuale"
+				echo "----------------------"
+				echo "$repositories" | jq .
+				;;
+			5)
+				echo
+				echo "💾 Salvataggio configurazione..."
+				echo '{"repositories":'"$repositories"'}' | jq . > "$REPOS_FILE"
+				echo "✅ Configurazione salvata in $REPOS_FILE"
+				return 0
+				;;
+			6)
+				echo
+				echo "⚠️  Uscita senza salvare"
+				return 0
+				;;
+			*)
+				echo "❌ Scelta non valida"
+				;;
+		esac
+	done
+}
+
 # Main command handler
 case "$1" in
 	"install")
 		install_script
+		;;
+	"config")
+		configure_repos
 		;;
 	"init")
 		read_repos
