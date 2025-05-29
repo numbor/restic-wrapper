@@ -112,8 +112,11 @@ backup_repo()
 	# Set password
 	export RESTIC_PASSWORD="$password"
 
+	# Crea il tag con data e ora
+	local datetime_tag="backup-$(date +"%Y%m%d-%H%M%S")"
+
 	# Create backup command
-	local backup_cmd="restic -r $destination backup $exclude_params"
+	local backup_cmd="restic -r $destination backup --tag $datetime_tag $exclude_params"
 
 	# Add paths
 	while IFS= read -r path; do
@@ -156,7 +159,7 @@ backup_all()
 	# Iterate through all repositories
 	jq -r '.repositories[] | .name' "$REPOS_FILE" | while read -r repo_name; do
 		current=$((current + 1))
-		echo "📦 Processing repository ($current/$total_repos): \033[1;36m$repo_name\033[0m"
+		echo -e "📦 Processing repository ($current/$total_repos): \033[1;36m$repo_name\033[0m"
 		echo "-------------------------------------------"
 		backup_repo "$repo_name"
 		echo
@@ -308,7 +311,7 @@ init_all()
 	# Iterate through all repositories
 	jq -r '.repositories[] | .name' "$REPOS_FILE" | while read -r repo_name; do
 		current=$((current + 1))
-		echo "📦 Processing repository ($current/$total_repos): \033[1;36m$repo_name\033[0m"
+		echo -e "📦 Processing repository ($current/$total_repos): \033[1;36m$repo_name\033[0m"
 		echo "-------------------------------------------"
 		if ! init_repo "$repo_name"; then
 			failed=$((failed + 1))
