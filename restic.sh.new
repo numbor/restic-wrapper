@@ -15,6 +15,10 @@
 # - restic: The backup tool (https://restic.net)
 # - jq: JSON processor for configuration management
 # - crontab: For backup scheduling (usually pre-installed)
+#
+# Author: Your Name
+# License: MIT
+# Version: 1.0.0
 
 # Configuration
 CONFIG_DIR="$HOME/.config"
@@ -37,22 +41,45 @@ log_success() { echo -e "${COLOR_GREEN}[SUCCESS]${COLOR_RESET} $1"; }
 log_warning() { echo -e "${COLOR_YELLOW}[WARNING]${COLOR_RESET} $1"; }
 log_error() { echo -e "${COLOR_RED}[ERROR]${COLOR_RESET} $1"; }
 
-# Check if jq is installed
-check_jq_binary()
-{
-	if ! command -v jq &> /dev/null; then
-		echo "jq is not installed. Installing..."
-		if command -v apt-get &> /dev/null; then
-			sudo apt-get update && sudo apt-get install -y jq
-		elif command -v dnf &> /dev/null; then
-			sudo dnf install -y jq
-		elif command -v pacman &> /dev/null; then
-			sudo pacman -S --noconfirm jq
-		else
-			echo "Error: Could not install jq. Please install it manually."
-			exit 1
-		fi
-	fi
+# Check if required dependencies are installed
+check_dependencies() {
+    local missing_deps=0
+    
+    # Check jq
+    if ! command -v jq &> /dev/null; then
+        log_warning "jq is not installed. Installing..."
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y jq
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -S --noconfirm jq
+        else
+            log_error "Could not install jq. Please install it manually."
+            missing_deps=1
+        fi
+    fi
+    
+    # Check restic
+    if ! command -v restic &> /dev/null; then
+        log_warning "restic is not installed. Installing..."
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y restic
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y restic
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -S --noconfirm restic
+        else
+            log_error "Could not install restic. Please install it manually."
+            missing_deps=1
+        fi
+    fi
+    
+    # Exit if any dependencies are missing
+    if [ $missing_deps -eq 1 ]; then
+        log_error "Missing required dependencies. Please install them and try again."
+        exit 1
+    fi
 }
 
 # Function to check and install restic binary
@@ -103,12 +130,8 @@ read_repos()
 }
 
 # Function to backup a specific repository
-backup_repo()
-{
+backup_repo() {
     local repo_name="$1"
-    local pre_script="$2"
-    local post_script="$3"
-
     if [ -z "$repo_name" ]; then
         log_error "Repository name not provided"
         return 1
@@ -130,145 +153,109 @@ backup_repo()
     paths=$(echo "$repo_config" | jq -r '.paths[]')
     excludes=$(echo "$repo_config" | jq -r '.exclude[]')
 
-    # Get pre/post backup scripts from config if not provided as parameters
-    if [ -z "$pre_script" ]; then
-        pre_script=$(echo "$repo_config" | jq -r '.pre_backup // empty')
-    fi
-    if [ -z "$post_script" ]; then
-        post_script=$(echo "$repo_config" | jq -r '.post_backup // empty')
+    # Validate backup paths
+    local invalid_paths=0
+    while IFS= read -r path; do
+        # Expand ~ to $HOME
+        path="${path/#\~/$HOME}"
+        if [ ! -e "$path" ]; then
+            log_warning "Path does not exist: $path"
+            invalid_paths=1
+        fi
+    done < <(echo "$paths")
+
+    if [ $invalid_paths -eq 1 ]; then
+        log_error "Some backup paths are invalid. Please check your configuration."
+        return 1
     fi
 
-    # Run pre-backup script if provided
-    if [ -n "$pre_script" ]; then
-        if [ -x "$pre_script" ]; then
-            log_info "Running pre-backup script: $pre_script"
-            if ! "$pre_script" "$repo_name"; then
-                log_error "Pre-backup script failed"
-                return 1
-            fi
+    # Create exclude parameters
+    local exclude_params=""
+    while IFS= read -r exclude; do
+        exclude_params="$exclude_params --exclude '$exclude'"
+    done < <(echo "$excludes")
+
+    # Set password
+    export RESTIC_PASSWORD="$password"
+
+    # Create backup tag with timestamp
+    local datetime_tag="backup-$(date +"%Y%m%d-%H%M%S")"
+
+    # Create backup command
+    local backup_cmd="restic -r $destination backup --tag $datetime_tag $exclude_params --json"
+
+    # Add paths to backup command
+    while IFS= read -r path; do
+        path="${path/#\~/$HOME}"
+        backup_cmd="$backup_cmd '$path'"
+    done < <(echo "$paths")
+
+    # Execute backup
+    log_info "Starting backup for repository: ${COLOR_CYAN}$repo_name${COLOR_RESET}"
+    log_info "Destination: $destination"
+    
+    # Show progress spinner
+    local pid
+    eval "$backup_cmd" > /tmp/restic-backup-$$.json 2>&1 & pid=$!
+    
+    local spinner=( '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏' )
+    local i=0
+    while kill -0 $pid 2>/dev/null; do
+        echo -ne "\r${spinner[i]} Backing up...   "
+        i=$(( (i+1) % ${#spinner[@]} ))
+        sleep 0.1
+    done
+    
+    # Check backup status
+    wait $pid
+    local backup_status=$?
+    echo -ne "\r"
+    
+    if [ $backup_status -eq 0 ]; then
+        log_success "Backup completed successfully"
+        
+        # Parse backup statistics
+        local stats
+        stats=$(jq -r '.summary' /tmp/restic-backup-$$.json 2>/dev/null)
+        if [ -n "$stats" ]; then
+            echo -e "\nBackup Statistics:"
+            echo "$stats" | jq -r 'to_entries | .[] | "  " + (.key | gsub("_"; " ") | ascii_upcase) + ": " + (.value | tostring)'
+        fi
+    else
+        log_error "Backup failed"
+        cat /tmp/restic-backup-$$.json
+        rm -f /tmp/restic-backup-$$.json
+        return 1
+    fi
+    
+    rm -f /tmp/restic-backup-$$.json
+
+    # Apply retention policy if specified
+    if echo "$repo_config" | jq -e '.retention' > /dev/null; then
+        local last daily weekly monthly
+        last=$(echo "$repo_config" | jq -r '.retention.last')
+        daily=$(echo "$repo_config" | jq -r '.retention.daily')
+        weekly=$(echo "$repo_config" | jq -r '.retention.weekly')
+        monthly=$(echo "$repo_config" | jq -r '.retention.monthly')
+
+        log_info "Applying retention policy..."
+        if restic -r "$destination" forget --prune \
+            --keep-last "$last" \
+            --keep-daily "$daily" \
+            --keep-weekly "$weekly" \
+            --keep-monthly "$monthly"; then
+            log_success "Retention policy applied successfully"
         else
-            log_error "Pre-backup script is not executable: $pre_script"
+            log_error "Failed to apply retention policy"
             return 1
         fi
     fi
 
-	# Validate backup paths
-	local invalid_paths=0
-	while IFS= read -r path; do
-		# Expand ~ to $HOME
-		path="${path/#\~/$HOME}"
-		if [ ! -e "$path" ]; then
-			log_warning "Path does not exist: $path"
-			invalid_paths=1
-		fi
-	done < <(echo "$paths")
-
-	if [ $invalid_paths -eq 1 ]; then
-		log_error "Some backup paths are invalid. Please check your configuration."
-		return 1
-	fi
-
-	# Create exclude parameters
-	local exclude_params=""
-	while IFS= read -r exclude; do
-		exclude_params="$exclude_params --exclude '$exclude'"
-	done < <(echo "$excludes")
-
-	# Set password
-	export RESTIC_PASSWORD="$password"
-
-	# Create backup tag with timestamp
-	local datetime_tag="backup-$(date +"%Y%m%d-%H%M%S")"
-
-	# Create backup command with JSON output
-	local backup_cmd="restic -r $destination backup --tag $datetime_tag $exclude_params --json"
-
-	# Add paths
-	while IFS= read -r path; do
-		# Expand ~ to $HOME
-		path="${path/#\~/$HOME}"
-		backup_cmd="$backup_cmd '$path'"
-	done < <(echo "$paths")
-
-	# Execute backup with progress spinner
-	log_info "Starting backup for repository: ${COLOR_CYAN}$repo_name${COLOR_RESET}"
-	log_info "Destination: $destination"
-	
-	local pid
-	eval "$backup_cmd" > /tmp/restic-backup-$$.json 2>&1 & pid=$!
-	
-	local spinner=( '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏' )
-	local i=0
-	while kill -0 $pid 2>/dev/null; do
-		echo -ne "\r${spinner[i]} Backing up...   "
-		i=$(( (i+1) % ${#spinner[@]} ))
-		sleep 0.1
-	done
-	
-	# Check backup status
-	wait $pid
-	local backup_status=$?
-	echo -ne "\r"
-	
-	if [ $backup_status -eq 0 ]; then
-		log_success "Backup completed successfully"
-		
-		# Parse backup statistics
-		local stats
-		stats=$(jq -r '.summary' /tmp/restic-backup-$$.json 2>/dev/null)
-		if [ -n "$stats" ]; then
-			echo -e "\nBackup Statistics:"
-			echo "$stats" | jq -r 'to_entries | .[] | "  " + (.key | gsub("_"; " ") | ascii_upcase) + ": " + (.value | tostring)'
-		fi
-	else
-		log_error "Backup failed"
-		cat /tmp/restic-backup-$$.json
-		rm -f /tmp/restic-backup-$$.json
-		return 1
-	fi
-	
-	rm -f /tmp/restic-backup-$$.json
-
-	# Apply retention policy if specified
-	if echo "$repo_config" | jq -e '.retention' > /dev/null; then
-		local last daily weekly monthly
-		last=$(echo "$repo_config" | jq -r '.retention.last')
-		daily=$(echo "$repo_config" | jq -r '.retention.daily')
-		weekly=$(echo "$repo_config" | jq -r '.retention.weekly')
-		monthly=$(echo "$repo_config" | jq -r '.retention.monthly')
-
-		log_info "Applying retention policy..."
-		if restic -r "$destination" forget --prune \
-			--keep-last "$last" \
-			--keep-daily "$daily" \
-			--keep-weekly "$weekly" \
-			--keep-monthly "$monthly"; then
-			log_success "Retention policy applied successfully"
-		else
-			log_error "Failed to apply retention policy"
-			return 1
-		fi
-	fi
-
-    # Run post-backup script if provided
-    if [ -n "$post_script" ]; then
-        if [ -x "$post_script" ]; then
-            log_info "Running post-backup script: $post_script"
-            if ! "$post_script" "$repo_name"; then
-                log_warning "Post-backup script failed"
-            fi
-        else
-            log_error "Post-backup script is not executable: $post_script"
-            return 1
-        fi
-    fi
+    return 0
 }
 
 # Function to backup all repositories
 backup_all() {
-    local pre_script="$1"
-    local post_script="$2"
-
     log_info "Starting backup of all repositories..."
     echo "=========================================="
     echo
@@ -292,7 +279,7 @@ backup_all() {
         echo -e "\n${COLOR_CYAN}[$current/$total_repos]${COLOR_RESET} Processing repository: ${COLOR_CYAN}$repo_name${COLOR_RESET}"
         echo "-------------------------------------------"
 
-        if ! backup_repo "$repo_name" "$pre_script" "$post_script"; then
+        if ! backup_repo "$repo_name"; then
             failed_repos=$((failed_repos + 1))
             failed_repos_list+=("$repo_name")
         fi
@@ -338,90 +325,48 @@ backup_all() {
 # Function to list all repositories
 show_repos()
 {
-    echo
-    echo -e "${COLOR_CYAN}📦 Configured Backup Repositories${COLOR_RESET}"
-    echo "=================================="
+	echo
+	echo "🗄️  Configured Backup Repositories"
+	echo "=================================="
+	echo
 
-    # Get total number of repositories
-    local total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
-    if [ "$total_repos" -eq 0 ]; then
-        echo -e "\n${COLOR_YELLOW}No repositories configured${COLOR_RESET}"
-        echo "Use 'config' command to add repositories"
-        return 0
-    fi
+	# Get all repositories and iterate through them
+	jq -r '.repositories[] | @base64' "$REPOS_FILE" | while read -r repo_b64; do
+		repo=$(echo "$repo_b64" | base64 -d)
 
-    echo -e "\nFound ${COLOR_CYAN}$total_repos${COLOR_RESET} configured repositories\n"
+		# Extract repository details
+		name=$(echo "$repo" | jq -r '.name')
+		dest=$(echo "$repo" | jq -r '.destination')
 
-    # Get all repositories and iterate through them
-    local index=0
-    jq -r '.repositories[] | @base64' "$REPOS_FILE" | while read -r repo_b64; do
-        repo=$(echo "$repo_b64" | base64 -d)
+		# Print repository header
+		echo -e "📦 Repository: \033[1;36m$name\033[0m"
+		echo "   └─ 🔗 Destination: $dest"
 
-        # Extract repository details
-        name=$(echo "$repo" | jq -r '.name')
-        dest=$(echo "$repo" | jq -r '.destination')
+		# Print paths
+		echo "   └─ 📂 Backup paths:"
+		echo "$repo" | jq -r '.paths[]' | while read -r path; do
+			echo "      └─ $path"
+		done
 
-        # Print repository header with index
-        echo -e "${COLOR_CYAN}[$index]${COLOR_RESET} Repository: ${COLOR_CYAN}$name${COLOR_RESET}"
-        echo "    └─ 🔗 Destination: $dest"
+		# Print excludes if any
+		if echo "$repo" | jq -e '.exclude' > /dev/null && [ "$(echo "$repo" | jq -r '.exclude | length')" -gt 0 ]; then
+			echo "   └─ ❌ Excludes:"
+			echo "$repo" | jq -r '.exclude[]' | while read -r excl; do
+				echo "      └─ $excl"
+			done
+		fi
 
-        # Get and print latest backup info
-        if [ -n "$RESTIC_PASSWORD" ]; then
-            unset RESTIC_PASSWORD
-        fi
-        export RESTIC_PASSWORD=$(echo "$repo" | jq -r '.password')
-        latest_snap=$(restic -r "$dest" snapshots --json latest 2>/dev/null | jq -r '.[0].time // "No backups yet"')
-        if [ "$latest_snap" != "No backups yet" ]; then
-            echo "    └─ 🕒 Latest backup: $latest_snap"
-        else
-            echo -e "    └─ 🕒 Latest backup: ${COLOR_YELLOW}No backups yet${COLOR_RESET}"
-        fi
+		# Print retention policy if exists
+		if echo "$repo" | jq -e '.retention' > /dev/null; then
+			echo "   └─ ⏱️  Retention policy:"
+			echo "      └─ Keep last: $(echo "$repo" | jq -r '.retention.last') snapshots"
+			echo "      └─ Keep daily: $(echo "$repo" | jq -r '.retention.daily') days"
+			echo "      └─ Keep weekly: $(echo "$repo" | jq -r '.retention.weekly') weeks"
+			echo "      └─ Keep monthly: $(echo "$repo" | jq -r '.retention.monthly') months"
+		fi
 
-        # Print paths with status
-        echo "    └─ 📂 Backup paths:"
-        echo "$repo" | jq -r '.paths[]' | while read -r path; do
-            path="${path/#\~/$HOME}"
-            if [ -e "$path" ]; then
-                echo -e "       └─ ${COLOR_GREEN}✓${COLOR_RESET} $path"
-            else
-                echo -e "       └─ ${COLOR_RED}✗${COLOR_RESET} $path ${COLOR_RED}(not found)${COLOR_RESET}"
-            fi
-        done
-
-        # Print excludes if any
-        if echo "$repo" | jq -e '.exclude' > /dev/null && [ "$(echo "$repo" | jq -r '.exclude | length')" -gt 0 ]; then
-            echo "    └─ 🚫 Excludes:"
-            echo "$repo" | jq -r '.exclude[]' | while read -r excl; do
-                echo "       └─ $excl"
-            done
-        fi
-
-        # Print retention policy if exists
-        if echo "$repo" | jq -e '.retention' > /dev/null; then
-            echo "    └─ ⏱️  Retention policy:"
-            echo "       └─ Last: $(echo "$repo" | jq -r '.retention.last') snapshots"
-            echo "       └─ Daily: $(echo "$repo" | jq -r '.retention.daily') days"
-            echo "       └─ Weekly: $(echo "$repo" | jq -r '.retention.weekly') weeks"
-            echo "       └─ Monthly: $(echo "$repo" | jq -r '.retention.monthly') months"
-        fi
-
-        # Print pre and post backup scripts if configured
-        local pre_script=$(echo "$repo" | jq -r '.pre_backup // empty')
-        local post_script=$(echo "$repo" | jq -r '.post_backup // empty')
-        if [ -n "$pre_script" ] || [ -n "$post_script" ]; then
-            echo "    └─ 📜 Backup scripts:"
-            [ -n "$pre_script" ] && echo "       └─ Pre-backup: $pre_script"
-            [ -n "$post_script" ] && echo "       └─ Post-backup: $post_script"
-        fi
-
-        # Print separator between repositories
-        if [ $((index + 1)) -lt "$total_repos" ]; then
-            echo -e "\n${COLOR_BLUE}────────────────────────────────────${COLOR_RESET}\n"
-        fi
-
-        index=$((index + 1))
-    done
-    echo
+		echo
+	done
 }
 
 # Install command: copies the script to /usr/local/bin
@@ -458,9 +403,7 @@ install_script()
                 "daily": 7,
                 "weekly": 4,
                 "monthly": 12
-            },
-            "pre_backup": "",
-            "post_backup": ""
+            }
         }
     ]
 }
@@ -633,72 +576,130 @@ list_all_snapshots()
 }
 
 # Function to restore a specific repository
-restore_repo()
-{
-	local repo_name="$1"
-	local snapshot_id="$2"
-	local files=("${@:3}") # Get all remaining arguments as files array
+restore_repo() {
+    local repo_name="$1"
+    local snapshot_id="$2"
+    local files=("${@:3}") # Get all remaining arguments as files array
 
-	if [ -z "$repo_name" ]; then
-		echo "Error: Repository name not provided"
-		exit 1
-	fi
+    if [ -z "$repo_name" ]; then
+        log_error "Repository name not provided"
+        return 1
+    fi
 
-	if [ -z "$snapshot_id" ]; then
-		echo "Error: Snapshot ID not provided"
-		exit 1
-	fi
+    if [ -z "$snapshot_id" ]; then
+        log_error "Snapshot ID not provided"
+        return 1
+    fi
 
-	# Extract repository configuration
-	local repo_config
-	repo_config=$(jq -r --arg name "$repo_name" '.repositories[] | select(.name == $name)' "$REPOS_FILE")
+    # Extract repository configuration
+    local repo_config
+    repo_config=$(jq -r --arg name "$repo_name" '.repositories[] | select(.name == $name)' "$REPOS_FILE")
 
-	if [ -z "$repo_config" ]; then
-		echo "Error: Repository '$repo_name' not found"
-		exit 1
-	fi
+    if [ -z "$repo_config" ]; then
+        log_error "Repository '$repo_name' not found"
+        return 1
+    fi
 
-	# Extract values from repo configuration
-	local destination
-	local password
+    # Extract values from repo configuration
+    local destination password
+    destination=$(echo "$repo_config" | jq -r '.destination')
+    password=$(echo "$repo_config" | jq -r '.password')
 
-	destination=$(echo "$repo_config" | jq -r '.destination')
-	password=$(echo "$repo_config" | jq -r '.password')
+    # Set password
+    export RESTIC_PASSWORD="$password"
 
-	# Set password
-	export RESTIC_PASSWORD="$password"
+    # Verify snapshot exists
+    if ! restic -r "$destination" snapshots "$snapshot_id" &>/dev/null; then
+        log_error "Snapshot $snapshot_id not found in repository $repo_name"
+        return 1
+    fi
 
-	# Create restore command
-	local restore_cmd="restic -r $destination restore $snapshot_id"
+    # Create restore command with JSON output
+    local restore_cmd="restic -r $destination restore $snapshot_id --json"
 
-	# If files are specified, add them to the command
-	if [ ${#files[@]} -gt 0 ]; then
-		echo "🔄 Restoring specific files from repository: \033[1;36m$repo_name\033[0m"
-		echo "   └─ 🔗 Destination: $destination"
-		echo "   └─ 📊 Snapshot ID: $snapshot_id"
-		echo "   └─ 📂 Files to restore:"
-		for file in "${files[@]}"; do
-			echo "      └─ $file"
-			restore_cmd="$restore_cmd --include '$file'"
-		done
-	else
-		echo "🔄 Restoring entire snapshot from repository: \033[1;36m$repo_name\033[0m"
-		echo "   └─ 🔗 Destination: $destination"
-		echo "   └─ 📊 Snapshot ID: $snapshot_id"
-	fi
+    # If files are specified, verify they exist in the snapshot and add them to the command
+    if [ ${#files[@]} -gt 0 ]; then
+        log_info "Restoring specific files from repository: ${COLOR_CYAN}$repo_name${COLOR_RESET}"
+        log_info "Destination: $destination"
+        log_info "Snapshot ID: $snapshot_id"
+        echo "Files to restore:"
 
-	# Add target directory (current directory by default)
-	restore_cmd="$restore_cmd --target ."
+        local missing_files=0
+        for file in "${files[@]}"; do
+            # Check if file exists in snapshot
+            if restic -r "$destination" ls "$snapshot_id" "$file" &>/dev/null; then
+                echo -e "  ${COLOR_GREEN}✓${COLOR_RESET} $file"
+                restore_cmd="$restore_cmd --include '$file'"
+            else
+                echo -e "  ${COLOR_RED}✗${COLOR_RESET} $file (not found in snapshot)"
+                missing_files=1
+            fi
+        done
 
-	echo
-	echo "Starting restore operation..."
-	if ! eval "$restore_cmd"; then
-		echo "❌ Failed to restore from repository: $repo_name"
-		return 1
-	fi
+        if [ $missing_files -eq 1 ]; then
+            log_error "Some files were not found in the snapshot"
+            return 1
+        fi
+    else
+        log_info "Restoring entire snapshot from repository: ${COLOR_CYAN}$repo_name${COLOR_RESET}"
+        log_info "Destination: $destination"
+        log_info "Snapshot ID: $snapshot_id"
 
-	echo "✅ Restore completed successfully"
-	return 0
+        # Show snapshot contents
+        echo -e "\nSnapshot contents:"
+        restic -r "$destination" ls "$snapshot_id" | head -n 10
+        echo "..."
+    fi
+
+    # Add target directory (current directory by default)
+    restore_cmd="$restore_cmd --target ."
+
+    # Confirm restore operation
+    echo -e "\n${COLOR_YELLOW}Warning:${COLOR_RESET} This operation will restore files to the current directory."
+    read -p "Do you want to continue? [y/N] " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "Restore operation cancelled"
+        return 1
+    fi
+
+    # Execute restore with progress spinner
+    echo -e "\nStarting restore operation..."
+    local pid
+    eval "$restore_cmd" > /tmp/restic-restore-$$.json 2>&1 & pid=$!
+
+    local spinner=( '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏' )
+    local i=0
+    while kill -0 $pid 2>/dev/null; do
+        echo -ne "\r${spinner[i]} Restoring...   "
+        i=$(( (i+1) % ${#spinner[@]} ))
+        sleep 0.1
+    done
+
+    # Check restore status
+    wait $pid
+    local restore_status=$?
+    echo -ne "\r"
+
+    if [ $restore_status -eq 0 ]; then
+        log_success "Restore completed successfully"
+
+        # Parse restore statistics
+        local stats
+        stats=$(jq -r '.summary' /tmp/restic-restore-$$.json 2>/dev/null)
+        if [ -n "$stats" ]; then
+            echo -e "\nRestore Statistics:"
+            echo "$stats" | jq -r 'to_entries | .[] | "  " + (.key | gsub("_"; " ") | ascii_upcase) + ": " + (.value | tostring)'
+        fi
+    else
+        log_error "Failed to restore from repository: $repo_name"
+        cat /tmp/restic-restore-$$.json
+        rm -f /tmp/restic-restore-$$.json
+        return 1
+    fi
+
+    rm -f /tmp/restic-restore-$$.json
+    return 0
 }
 
 # Function to select schedule with arrow keys
@@ -917,20 +918,11 @@ show_usage() {
     echo "                If omitted, initializes all repositories"
     echo
 
-    echo -e "  ${COLOR_GREEN}backup${COLOR_RESET} [repo-name] [-pre-backup script] [-post-backup script]"
+    echo -e "  ${COLOR_GREEN}backup${COLOR_RESET} [repo-name]"
     echo "    Perform backup according to configuration"
     echo "    Arguments:"
-    echo "      repo-name        Optional: Backup specific repository"
-    echo "                       If omitted, backs up all repositories"
-    echo "    Options:"
-    echo "      -pre-backup     Optional: Script to run before backup"
-    echo "                      Script will receive repository name as parameter"
-    echo "      -post-backup    Optional: Script to run after backup"
-    echo "                      Script will receive repository name as parameter"
-    echo "    Features:"
-    echo "      - Automatic timestamp tags (backup-YYYYMMDD-HHMMSS)"
-    echo "      - Progress tracking with status bar"
-    echo "      - Detailed backup statistics"
+    echo "      repo-name  Optional: Backup specific repository"
+    echo "                If omitted, backs up all repositories"
     echo
 
     echo -e "  ${COLOR_GREEN}restore${COLOR_RESET} <repo-name> <snapshot-id> [-f file1 file2 ...]"
@@ -970,10 +962,6 @@ show_usage() {
     echo "  # Initialize and perform backup"
     echo "  restic.sh init"
     echo "  restic.sh backup"
-    echo
-    echo "  # Backup with pre/post scripts"
-    echo "  restic.sh backup -pre-backup /path/to/pre.sh -post-backup /path/to/post.sh"
-    echo "  restic.sh backup myrepo -pre-backup /path/to/pre.sh"
     echo
     echo "  # Restore specific files"
     echo "  restic.sh list myrepo -v"
@@ -1073,10 +1061,6 @@ configure_repos()
 				read -r -p "Numero di snapshot settimanali da mantenere: " keep_weekly
 				read -r -p "Numero di snapshot mensili da mantenere: " keep_monthly
 
-				echo "Script di pre/post backup (opzionali):"
-				read -r -p "Script da eseguire prima del backup (lascia vuoto per saltare): " pre_script
-				read -r -p "Script da eseguire dopo il backup (lascia vuoto per saltare): " post_script
-
 				# Create new repository JSON
 				new_repo=$(jq -n \
 					--arg name "$name" \
@@ -1088,8 +1072,6 @@ configure_repos()
 					--arg daily "${keep_daily:-7}" \
 					--arg weekly "${keep_weekly:-4}" \
 					--arg monthly "${keep_monthly:-12}" \
-					--arg pre_script "$pre_script" \
-					--arg post_script "$post_script" \
 					'{
 						"name": $name,
 						"destination": $dest,
@@ -1101,9 +1083,7 @@ configure_repos()
 							"daily": ($daily|tonumber),
 							"weekly": ($weekly|tonumber),
 							"monthly": ($monthly|tonumber)
-						},
-						"pre_backup": $pre_script,
-						"post_backup": $post_script
+						}
 					}')
 
 				# Add to repositories array
@@ -1205,15 +1185,6 @@ configure_repos()
 					read -r -p "Numero di snapshot mensili da mantenere [$current_monthly]: " keep_monthly
 					keep_monthly=${keep_monthly:-$current_monthly}
 
-					# Script di pre/post backup
-					local current_pre_script=$(echo "$current_repo" | jq -r '.pre_backup // empty')
-					read -r -p "Script pre-backup [$current_pre_script]: " pre_script
-					pre_script=${pre_script:-$current_pre_script}
-
-					local current_post_script=$(echo "$current_repo" | jq -r '.post_backup // empty')
-					read -r -p "Script post-backup [$current_post_script]: " post_script
-					post_script=${post_script:-$current_post_script}
-
 					# Create updated repository JSON
 					local updated_repo=$(jq -n \
 						--arg name "$name" \
@@ -1225,8 +1196,6 @@ configure_repos()
 						--arg daily "$keep_daily" \
 						--arg weekly "$keep_weekly" \
 						--arg monthly "$keep_monthly" \
-						--arg pre_script "$pre_script" \
-						--arg post_script "$post_script" \
 						'{
 							"name": $name,
 							"destination": $dest,
@@ -1238,9 +1207,7 @@ configure_repos()
 								"daily": ($daily|tonumber),
 								"weekly": ($weekly|tonumber),
 								"monthly": ($monthly|tonumber)
-							},
-							"pre_backup": $pre_script,
-							"post_backup": $post_script
+							}
 						}')
 
 					# Update repository in the array
@@ -1297,123 +1264,162 @@ configure_repos()
 }
 
 # Main command handler
+
+# Check for help option first
+if [ "$1" = "-h" ] || [ "$1" = "--help" ] || [ -z "$1" ]; then
+    show_usage
+    exit 0
+fi
+
+# Check dependencies before running any command
+check_dependencies
+
+# Handle commands
 case "$1" in
-	"install")
-		install_script
-		;;
-	"config")
-		read_repos
-		configure_repos "$2"
-		;;
-	"init")
-		read_repos
-		if [ -z "$2" ]; then
-			init_all
-		else
-			init_repo "$2"
-		fi
-		;;
-	"backup")
-		read_repos
-		repo_name=""
-		pre_script=""
-		post_script=""
+    "install")
+        if [ $# -gt 1 ]; then
+            log_error "install command takes no arguments"
+            exit 1
+        fi
+        install_script
+        ;;
 
-		# Parse arguments
-		shift # skip the 'backup' command
-		while [[ $# -gt 0 ]]; do
-			case "$1" in
-				-pre-backup)
-					shift
-					pre_script="$1"
-					shift
-					;;
-				-post-backup)
-					shift
-					post_script="$1"
-					shift
-					;;
-				*)
-					if [ -z "$repo_name" ]; then
-						repo_name="$1"
-					fi
-					shift
-					;;
-			esac
-		done
+    "config")
+        if [ $# -gt 2 ] || { [ $# -eq 2 ] && [ "$2" != "-s" ]; }; then
+            log_error "Invalid config command usage"
+            echo "Usage: $0 config [-s]"
+            exit 1
+        fi
+        read_repos
+        configure_repos "$2"
+        ;;
 
-		if [ -z "$repo_name" ]; then
-			backup_all "$pre_script" "$post_script"
-		else
-			backup_repo "$repo_name" "$pre_script" "$post_script"
-		fi
-		;;
-	"restore")
-		read_repos
-		repo_name=""
-		snapshot_id=""
-		files=()
+    "init")
+        if [ $# -gt 2 ]; then
+            log_error "Too many arguments for init command"
+            echo "Usage: $0 init [repo-name]"
+            exit 1
+        fi
+        read_repos
+        if [ -z "$2" ]; then
+            init_all
+        else
+            init_repo "$2"
+        fi
+        ;;
 
-		# Parse arguments
-		shift # skip the 'restore' command
-		while [[ $# -gt 0 ]]; do
-			case "$1" in
-				-f | --file)
-					shift
-					while [[ $# -gt 0 ]] && [[ $1 != -* ]]; do
-						files+=("$1")
-						shift
-					done
-					;;
-				*)
-					if [ -z "$repo_name" ]; then
-						repo_name="$1"
-					elif [ -z "$snapshot_id" ]; then
-						snapshot_id="$1"
-					fi
-					shift
-					;;
-			esac
-		done
+    "backup")
+        if [ $# -gt 2 ]; then
+            log_error "Too many arguments for backup command"
+            echo "Usage: $0 backup [repo-name]"
+            exit 1
+        fi
+        read_repos
+        if [ -z "$2" ]; then
+            backup_all
+        else
+            backup_repo "$2"
+        fi
+        ;;
 
-		if [ -z "$repo_name" ] || [ -z "$snapshot_id" ]; then
-			echo "Error: Repository name and snapshot ID are required"
-			echo "Usage: $0 restore <repo-name> <snapshot-id> [-f file1 file2 ...]"
-			exit 1
-		fi
+    "restore")
+        read_repos
+        repo_name=""
+        snapshot_id=""
+        files=()
 
-		restore_repo "$repo_name" "$snapshot_id" "${files[@]}"
-		;;
-	"crontab")
-		manage_crontab "$2"
-		;;
-	"list")
-		read_repos
-		verbose="false"
-		repo_name=""
+        # Parse arguments
+        shift # skip the 'restore' command
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -f | --file)
+                    shift
+                    if [ $# -eq 0 ]; then
+                        log_error "No files specified after -f option"
+                        exit 1
+                    fi
+                    while [[ $# -gt 0 ]] && [[ $1 != -* ]]; do
+                        files+=("$1")
+                        shift
+                    done
+                    ;;
+                -*)
+                    log_error "Unknown option: $1"
+                    echo "Usage: $0 restore <repo-name> <snapshot-id> [-f file1 file2 ...]"
+                    exit 1
+                    ;;
+                *)
+                    if [ -z "$repo_name" ]; then
+                        repo_name="$1"
+                    elif [ -z "$snapshot_id" ]; then
+                        snapshot_id="$1"
+                    else
+                        log_error "Unexpected argument: $1"
+                        echo "Usage: $0 restore <repo-name> <snapshot-id> [-f file1 file2 ...]"
+                        exit 1
+                    fi
+                    shift
+                    ;;
+            esac
+        done
 
-		# Parse arguments
-		shift # skip the 'list' command
-		while [[ $# -gt 0 ]]; do
-			case "$1" in
-				-v | --verbose)
-					verbose="true"
-					shift
-					;;
-				*)
-					repo_name="$1"
-					shift
-					;;
-			esac
-		done
+        if [ -z "$repo_name" ] || [ -z "$snapshot_id" ]; then
+            log_error "Repository name and snapshot ID are required"
+            echo "Usage: $0 restore <repo-name> <snapshot-id> [-f file1 file2 ...]"
+            exit 1
+        fi
 
-		if [ -z "$repo_name" ]; then
-			list_all_snapshots "$verbose"
-		else
-			list_repo_snapshots "$repo_name" "$verbose"
-		fi
-		;;
-	*)
-		show_usage
-		;;
+        restore_repo "$repo_name" "$snapshot_id" "${files[@]}"
+        ;;
+
+    "crontab")
+        if [ $# -gt 2 ] || { [ $# -eq 2 ] && [ "$2" != "-s" ] && [ "$2" != "-d" ]; }; then
+            log_error "Invalid crontab command usage"
+            echo "Usage: $0 crontab [-s|-d]"
+            exit 1
+        fi
+        manage_crontab "$2"
+        ;;
+
+    "list")
+        read_repos
+        verbose="false"
+        repo_name=""
+
+        # Parse arguments
+        shift # skip the 'list' command
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -v | --verbose)
+                    verbose="true"
+                    shift
+                    ;;
+                -*)
+                    log_error "Unknown option: $1"
+                    echo "Usage: $0 list [repo-name] [-v]"
+                    exit 1
+                    ;;
+                *)
+                    if [ -n "$repo_name" ]; then
+                        log_error "Unexpected argument: $1"
+                        echo "Usage: $0 list [repo-name] [-v]"
+                        exit 1
+                    fi
+                    repo_name="$1"
+                    shift
+                    ;;
+            esac
+        done
+
+        if [ -z "$repo_name" ]; then
+            list_all_snapshots "$verbose"
+        else
+            list_repo_snapshots "$repo_name" "$verbose"
+        fi
+        ;;
+
+    *)
+        log_error "Unknown command: $1"
+        show_usage
+        ;;
 esac
