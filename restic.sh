@@ -841,7 +841,8 @@ manage_crontab()
 
 	# Crea il comando crontab con logging
 	# Aggiungiamo data e ora all'inizio di ogni log entry
-	local log_cmd='date "+[%Y-%m-%d %H:%M:%S]" >> '"$LOG_FILE"' 2>&1 && '
+	# local log_cmd='date "+[%Y-%m-%d %H:%M:%S]" >> '"$LOG_FILE"' 2>&1 && '
+	local log_cmd=''
 	log_cmd+="$script_path backup >> $LOG_FILE 2>&1"
 	local cron_cmd="$schedule $log_cmd"
 
