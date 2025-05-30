@@ -84,13 +84,6 @@ check_restic_binary()
 		fi
 		echo "Restic installed successfully"
 	fi
-
-	# Check if fuse3 is installed on Debian/Ubuntu systems
-	if command -v apt-get &> /dev/null && ! dpkg -l | grep -q "fuse3"; then
-		echo "Installing fuse3 package..."
-		sudo apt-get update
-		sudo apt-get install -y fuse3
-	fi
 }
 
 # Function to read repositories from JSON
