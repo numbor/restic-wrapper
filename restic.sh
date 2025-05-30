@@ -890,6 +890,77 @@ manage_crontab()
 	fi
 }
 
+# Function to update the script from remote repository
+update_script() {
+    local remote_url="http://git.home.lan:3000/marco/restic/raw/branch/main/restic.sh"
+    local temp_file="/tmp/restic.sh.new"
+    local script_path="$0"
+    local backup_path="${script_path}.backup"
+
+    # Download new version
+    log_info "Downloading latest version from $remote_url..."
+    if ! curl -s -o "$temp_file" "$remote_url"; then
+        log_error "Failed to download the script"
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    # Check if download was successful and file is not empty
+    if [ ! -s "$temp_file" ]; then
+        log_error "Downloaded file is empty"
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    # Check if the downloaded file is different
+    if diff -q "$script_path" "$temp_file" >/dev/null; then
+        log_info "Script is already up to date"
+        rm -f "$temp_file"
+        return 0
+    fi
+
+    # Show differences
+    echo -e "\nChanges to be applied:"
+    echo "========================="
+    diff -u "$script_path" "$temp_file"
+    echo "========================="
+
+    # Ask for confirmation
+    read -r -p "Do you want to update the script? [y/N] " response
+    if [[ ! "$response" =~ ^[yY]$ ]]; then
+        log_info "Update cancelled"
+        rm -f "$temp_file"
+        return 0
+    fi
+
+    # Create backup
+    log_info "Creating backup of current script..."
+    if ! cp -p "$script_path" "$backup_path"; then
+        log_error "Failed to create backup"
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    # Get current permissions
+    local current_perms
+    current_perms=$(stat -c %a "$script_path")
+
+    # Update script
+    log_info "Installing new version..."
+    if ! mv "$temp_file" "$script_path"; then
+        log_error "Failed to install new version"
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    # Restore permissions
+    chmod "$current_perms" "$script_path"
+
+    log_success "Script updated successfully"
+    log_info "Backup saved as: $backup_path"
+    return 0
+}
+
 # Function to show usage help
 show_usage() {
     echo -e "${COLOR_CYAN}Restic Backup Manager${COLOR_RESET} - A comprehensive wrapper for Restic backup management"
@@ -950,6 +1021,12 @@ show_usage() {
     echo "      repo-name  Optional: List snapshots from specific repository"
     echo "    Options:"
     echo "      -v  Show detailed information including statistics"
+    echo
+
+    echo -e "  ${COLOR_GREEN}update${COLOR_RESET}"
+    echo "    Update this script to the latest version"
+    echo "    Downloads the latest version from the Git repository and"
+    echo "    creates a backup of the current version before updating"
     echo
 
     echo -e "  ${COLOR_GREEN}crontab${COLOR_RESET} [-s|-d]"
@@ -1387,6 +1464,9 @@ case "$1" in
 		;;
 	"crontab")
 		manage_crontab "$2"
+		;;
+	"update")
+		update_script
 		;;
 	"list")
 		read_repos
