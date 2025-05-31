@@ -213,7 +213,7 @@ backup_repo()
 		
 		# Parse backup statistics
 		local stats
-		stats=$(jq -r '.summary' /tmp/restic-backup-$$.json 2>/dev/null)
+		stats=$(jq -r '.summary' $( tail -1 /tmp/restic-backup-$$.json ) 2>/dev/null)
 		if [ -n "$stats" ]; then
 			echo -e "\nBackup Statistics:"
 			echo "$stats" | jq -r 'to_entries | .[] | "  " + (.key | gsub("_"; " ") | ascii_upcase) + ": " + (.value | tostring)'
@@ -1291,16 +1291,27 @@ configure_repos()
 					post_script=${post_script:-$current_post_script}
 
 					# Create updated repository JSON
+					# Validate numeric values before JSON construction
+					local retention_values=(
+						"$keep_last" "$keep_daily" "$keep_weekly" "$keep_monthly"
+					)
+					for value in "${retention_values[@]}"; do
+						if [[ -n "$value" ]] && ! [[ "$value" =~ ^[0-9]+$ ]]; then
+							echo "❌ Error: Retention values must be positive numbers"
+							return 1
+						fi
+					done
+
 					local updated_repo=$(jq -n \
 						--arg name "$name" \
 						--arg dest "$destination" \
 						--arg pwd "$password" \
 						--argjson paths "$(printf '%s\n' "${paths[@]}" | jq -R . | jq -s .)" \
 						--argjson excludes "$(printf '%s\n' "${excludes[@]}" | jq -R . | jq -s .)" \
-						--arg last "$keep_last" \
-						--arg daily "$keep_daily" \
-						--arg weekly "$keep_weekly" \
-						--arg monthly "$keep_monthly" \
+						--arg last "${keep_last:-0}" \
+						--arg daily "${keep_daily:-0}" \
+						--arg weekly "${keep_weekly:-0}" \
+						--arg monthly "${keep_monthly:-0}" \
 						--arg pre_script "$pre_script" \
 						--arg post_script "$post_script" \
 						'{
@@ -1315,8 +1326,8 @@ configure_repos()
 								"weekly": ($weekly|tonumber),
 								"monthly": ($monthly|tonumber)
 							},
-							"pre_backup": $pre_script,
-							"post_backup": $post_script
+							"pre_backup": ($pre_script // null),
+							"post_backup": ($post_script // null)
 						}')
 
 					# Update repository in the array
