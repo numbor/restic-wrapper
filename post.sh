@@ -1,3 +1,3 @@
 echo "*********************************"
-echo " DOPO "
+echo " AFTER POST INSTALLATION SCRIPT"
 echo "*********************************"

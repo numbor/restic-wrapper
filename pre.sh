@@ -1,3 +1,3 @@
 echo "*********************************"
-echo " PRIMA "
+echo " BEFORE POST INSTALLATION SCRIPT"
 echo "*********************************"
