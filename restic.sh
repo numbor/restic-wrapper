@@ -18,41 +18,21 @@
 
 # Configuration
 CONFIG_DIR="$HOME/.config"
-CONFIG_FILE="$CONFIG_DIR/restic.ini"
 REPOS_FILE="$CONFIG_DIR/backup-repos.json"
 LOG_FILE="/var/log/restic-backup.log"
 
-# Load configuration from restic.ini
-load_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        # Source the configuration file
-        while IFS='=' read -r key value; do
-            # Skip comments and empty lines
-            [[ $key =~ ^[[:space:]]*# ]] && continue
-            [[ -z "$key" ]] && continue
-            
-            # Remove quotes and spaces
-            value=$(echo "$value" | tr -d '"' | tr -d "'")
-            
-            # Export variables
-            case "$key" in
-                TELEGRAM_BOT_TOKEN)
-                    export TELEGRAM_BOT_TOKEN="$value"
-                    ;;
-                TELEGRAM_CHAT_ID)
-                    export TELEGRAM_CHAT_ID="$value"
-                    ;;
-            esac
-        done < "$CONFIG_FILE"
+# Load Telegram configuration from JSON
+load_telegram_config() {
+    if [ -f "$REPOS_FILE" ]; then
+        TELEGRAM_BOT_TOKEN=$(jq -r '.config.telegram.bot_token // empty' "$REPOS_FILE")
+        TELEGRAM_CHAT_ID=$(jq -r '.config.telegram.chat_id // empty' "$REPOS_FILE")
     fi
 }
 
-# Load configuration at script start
-load_config
-
-# Telegram configuration (these will be overridden by load_config if present)
-TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+# Initialize telegram configuration variables
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_CHAT_ID=""
+load_telegram_config
 
 # ANSI color codes
 COLOR_RED='\033[0;31m'
@@ -516,9 +496,29 @@ install_script()
 				fi
 			fi
 
-			# Save Telegram configuration
-			echo "TELEGRAM_BOT_TOKEN=\"$bot_token\"" > "$CONFIG_FILE"
-			echo "TELEGRAM_CHAT_ID=\"$chat_id\"" >> "$CONFIG_FILE"
+			# If repos file doesn't exist, create it with default structure
+			if [ ! -f "$REPOS_FILE" ]; then
+				cat > "$REPOS_FILE" << 'EOL'
+{
+  "config": {
+    "telegram": {
+      "bot_token": "",
+      "chat_id": ""
+    }
+  },
+  "repositories": []
+}
+EOL
+			fi
+
+			# Update Telegram configuration in JSON file
+			local json_content
+			json_content=$(jq --arg token "$bot_token" --arg chat "$chat_id" '.config.telegram.bot_token = $token | .config.telegram.chat_id = $chat' "$REPOS_FILE")
+			echo "$json_content" > "$REPOS_FILE"
+			
+			# Load the new configuration
+			load_telegram_config
+			
 			echo "Telegram notifications configured successfully"
 
 			# Test Telegram configuration
