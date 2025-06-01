@@ -65,13 +65,13 @@ check_restic_binary()
 		if command -v apt-get &> /dev/null; then
 			# Debian/Ubuntu
 			sudo apt-get update
-			sudo apt-get install -y restic fuse3
+			sudo apt-get install -y restic fuse3 whiptail
 		elif command -v dnf &> /dev/null; then
 			# Fedora/RHEL
-			sudo dnf install -y restic
+			sudo dnf install -y restic whiptail
 		elif command -v pacman &> /dev/null; then
 			# Arch Linux
-			sudo pacman -S --noconfirm restic
+			sudo pacman -S --noconfirm restic libnewt
 		else
 			echo "Error: Could not determine package manager. Please install restic manually."
 			exit 1
@@ -83,6 +83,28 @@ check_restic_binary()
 			exit 1
 		fi
 		echo "Restic installed successfully"
+	fi
+
+	# Check if fuse3 is installed on Debian/Ubuntu systems
+	if command -v apt-get &> /dev/null && ! dpkg -l | grep -q "fuse3"; then
+		echo "Installing fuse3 package..."
+		sudo apt-get update
+		sudo apt-get install -y fuse3
+	fi
+
+	# Check if whiptail is installed
+	if ! command -v whiptail &> /dev/null; then
+		echo "Installing whiptail..."
+		if command -v apt-get &> /dev/null; then
+			sudo apt-get update
+			sudo apt-get install -y whiptail
+		elif command -v dnf &> /dev/null; then
+			sudo dnf install -y whiptail
+		elif command -v pacman &> /dev/null; then
+			sudo pacman -S --noconfirm libnewt
+		else
+			echo "Warning: Could not install whiptail. Graphical file selection will not be available."
+		fi
 	fi
 }
 
@@ -635,7 +657,8 @@ restore_repo()
 {
 	local repo_name="$1"
 	local snapshot_id="$2"
-	local files=("${@:3}") # Get all remaining arguments as files array
+	local restore_path="$3"
+	local files=("${@:4}") # Get all remaining arguments as files array
 
 	if [ -z "$repo_name" ]; then
 		echo "Error: Repository name not provided"
@@ -685,8 +708,9 @@ restore_repo()
 		echo "   └─ 📊 Snapshot ID: $snapshot_id"
 	fi
 
-	# Add target directory (current directory by default)
-	restore_cmd="$restore_cmd --target ."
+	# Add target directory
+	echo "   └─ 🎯 Target path: $restore_path"
+	restore_cmd="$restore_cmd --target '$restore_path'"
 
 	echo
 	echo "Starting restore operation..."
@@ -699,75 +723,141 @@ restore_repo()
 	return 0
 }
 
-# Function to select schedule with arrow keys
-select_schedule()
-{
-	local options=(
-		"0 2 * * *|Ogni giorno alle 2:00"
-		"0 */6 * * *|Ogni 6 ore"
-		"0 */12 * * *|Ogni 12 ore"
-		"0 2 * * 0|Ogni domenica alle 2:00"
-		"0 2 1 * *|Il primo del mese alle 2:00"
-		"0 2 */2 * *|Ogni 2 giorni alle 2:00"
-		"0 2 * * 1-5|Dal lunedì al venerdì alle 2:00"
-		"custom|Schedulazione personalizzata"
-	)
-	local selected=0
-	local key
-	schedule=""
+# Function to handle restore command
+handle_restore_command() {
+    local repo_name=""
+    local snapshot_id=""
+    local files=()
+    local use_gui=false
+    local restore_path="."  # Default to current directory
 
-	# Nascondi il cursore
-	echo -e "\e[?25l"
+    # Parse arguments
+    shift # skip the 'restore' command
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -f | --file)
+                shift
+                while [[ $# -gt 0 ]] && [[ $1 != -* ]]; do
+                    files+=("$1")
+                    shift
+                done
+                ;;
+            -g | --gui)
+                use_gui=true
+                shift
+                ;;
+            -p | --path)
+                shift
+                if [[ $# -gt 0 ]]; then
+                    restore_path="$1"
+                    shift
+                else
+                    echo "Error: -p option requires a path argument"
+                    return 1
+                fi
+                ;;
+            *)
+                if [ -z "$repo_name" ]; then
+                    repo_name="$1"
+                elif [ -z "$snapshot_id" ]; then
+                    snapshot_id="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
 
-	while true; do
-		# Mostra header
-		echo
-		echo "🕒 Seleziona la schedulazione con ↑↓ e premi INVIO per confermare"
-		echo "=================================================="
+    if [ -z "$repo_name" ] || [ -z "$snapshot_id" ]; then
+        echo "Error: Repository name and snapshot ID are required"
+        echo "Usage: $0 restore <repo-name> <snapshot-id> [-f file1 file2 ...] [-g] [-p path]"
+        echo "Options:"
+        echo "  -f, --file  Specify files to restore"
+        echo "  -g, --gui   Use graphical interface to select files"
+        echo "  -p, --path  Target path for restoring files (default: current directory)"
+        return 1
+    fi
 
-		# Mostra le opzioni con descrizioni più chiare
-		echo
-		for i in "${!options[@]}"; do
-			if [ $i -eq $selected ]; then
-				printf "\033[1;36m▶ %-40s\033[0m\n" "${options[$i]#*|}"
-			else
-				printf "  %-40s\n" "${options[$i]#*|}"
-			fi
-		done
-		echo
-		echo "Usa ↑↓ per muoverti e premi INVIO per selezionare"
+    # Extract repository configuration for graphical selection
+    if [ "$use_gui" = true ]; then
+        if ! command -v whiptail &> /dev/null; then
+            log_error "whiptail is not installed. Cannot use graphical file selection."
+            return 1
+        fi
 
-		# Leggi il tasto premuto
-		read -rsn1 key
-		case "$key" in
-			$'\x1B') # ESC sequence
-				read -rsn2 key
-				case "$key" in
-					"[A") # Up arrow
-						[ $selected -gt 0 ] && selected=$((selected - 1))
-						;;
-					"[B") # Down arrow
-						[ $selected -lt $((${#options[@]} - 1)) ] && selected=$((selected + 1))
-						;;
-				esac
-				;;
-			"") # Enter key
-				schedule="${options[$selected]%|*}"
-				break
-				;;
-		esac
-	done
+        # Get repository configuration
+        repo_config=$(jq -r --arg name "$repo_name" '.repositories[] | select(.name == $name)' "$REPOS_FILE")
+        if [ -z "$repo_config" ]; then
+            log_error "Repository '$repo_name' not found"
+            return 1
+        fi
 
-	# Mostra il cursore
-	echo -e "\e[?25h"
+        destination=$(echo "$repo_config" | jq -r '.destination')
+        password=$(echo "$repo_config" | jq -r '.password')
 
-	# Se è stata selezionata l'opzione personalizzata
-	if [ "$schedule" = "custom" ]; then
-		echo
-		echo "Inserisci la schedulazione personalizzata (formato crontab):"
-		echo -n "> "
-		read -r schedule
-	fi
+        # Get files through graphical selection
+        if selected_files=($(select_files_graphically "$repo_name" "$snapshot_id" "$destination" "$password")); then
+            if [ ${#selected_files[@]} -gt 0 ]; then
+                files=("${selected_files[@]}")
+            else
+                log_error "No files selected"
+                return 1
+            fi
+        else
+            return 1
+        fi
+    fi
+
+    restore_repo "$repo_name" "$snapshot_id" "$restore_path" "${files[@]}"
+}
+
+# Function to select files graphically using whiptail
+select_files_graphically() {
+    local repo_name="$1"
+    local snapshot_id="$2"
+    local destination="$3"
+    local temp_file="/tmp/restic-files-$$.txt"
+    local selected_files=()
+
+    # List all files in the snapshot and save to temporary file
+    if ! RESTIC_PASSWORD="$4" restic -r "$destination" ls "$snapshot_id" > "$temp_file"; then
+        log_error "Failed to list files in snapshot"
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    # Create array of files with their selection status (initially OFF)
+    local file_list=()
+    while IFS= read -r file; do
+        # Skip empty lines and directory entries
+        [[ -z "$file" || "$file" =~ /$ ]] && continue
+        file_list+=("$file" "" "OFF")
+    done < "$temp_file"
+
+    if [ ${#file_list[@]} -eq 0 ]; then
+        log_error "No files found in snapshot"
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    # Show checklist dialog
+    if selected=$(whiptail --title "Select Files to Restore" \
+                          --checklist "Use space to select/deselect files" \
+                          $((LINES-8)) $((COLUMNS-10)) $((LINES-15)) \
+                          "${file_list[@]}" \
+                          3>&1 1>&2 2>&3); then
+        # Convert selected files string to array
+        eval "selected_files=($selected)"
+    else
+        log_info "File selection cancelled"
+        rm -f "$temp_file"
+        return 1
+    fi
+
+    rm -f "$temp_file"
+    
+    # Print selected files to stdout (one per line)
+    printf "%s\n" "${selected_files[@]}"
+    return 0
 }
 
 # Function to manage crontab scheduling
@@ -1003,7 +1093,7 @@ show_usage() {
     echo "      - Detailed backup statistics"
     echo
 
-    echo -e "  ${COLOR_GREEN}restore${COLOR_RESET} <repo-name> <snapshot-id> [-f file1 file2 ...]"
+    echo -e "  ${COLOR_GREEN}restore${COLOR_RESET} <repo-name> <snapshot-id> [-f file1 file2 ...] [-g] [-p path]"
     echo "    Restore files from a backup"
     echo "    Arguments:"
     echo "      repo-name    Name of the repository to restore from"
@@ -1011,6 +1101,8 @@ show_usage() {
     echo "    Options:"
     echo "      -f  Specify files to restore (optional)"
     echo "          If omitted, restores entire snapshot"
+    echo "      -g  Use graphical interface to select files"
+    echo "      -p  Target path for restoring files (default: current directory)"
     echo
 
     echo -e "  ${COLOR_GREEN}list${COLOR_RESET} [repo-name] [-v]"
@@ -1437,39 +1529,7 @@ case "$1" in
 		;;
 	"restore")
 		read_repos
-		repo_name=""
-		snapshot_id=""
-		files=()
-
-		# Parse arguments
-		shift # skip the 'restore' command
-		while [[ $# -gt 0 ]]; do
-			case "$1" in
-				-f | --file)
-					shift
-					while [[ $# -gt 0 ]] && [[ $1 != -* ]]; do
-						files+=("$1")
-						shift
-					done
-					;;
-				*)
-					if [ -z "$repo_name" ]; then
-						repo_name="$1"
-					elif [ -z "$snapshot_id" ]; then
-						snapshot_id="$1"
-					fi
-					shift
-					;;
-			esac
-		done
-
-		if [ -z "$repo_name" ] || [ -z "$snapshot_id" ]; then
-			echo "Error: Repository name and snapshot ID are required"
-			echo "Usage: $0 restore <repo-name> <snapshot-id> [-f file1 file2 ...]"
-			exit 1
-		fi
-
-		restore_repo "$repo_name" "$snapshot_id" "${files[@]}"
+		handle_restore_command "$@"
 		;;
 	"crontab")
 		manage_crontab "$2"
