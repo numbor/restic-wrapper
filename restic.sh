@@ -22,6 +22,38 @@ CONFIG_FILE="$CONFIG_DIR/restic.ini"
 REPOS_FILE="$CONFIG_DIR/backup-repos.json"
 LOG_FILE="/var/log/restic-backup.log"
 
+# Load configuration from restic.ini
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        # Source the configuration file
+        while IFS='=' read -r key value; do
+            # Skip comments and empty lines
+            [[ $key =~ ^[[:space:]]*# ]] && continue
+            [[ -z "$key" ]] && continue
+            
+            # Remove quotes and spaces
+            value=$(echo "$value" | tr -d '"' | tr -d "'")
+            
+            # Export variables
+            case "$key" in
+                TELEGRAM_BOT_TOKEN)
+                    export TELEGRAM_BOT_TOKEN="$value"
+                    ;;
+                TELEGRAM_CHAT_ID)
+                    export TELEGRAM_CHAT_ID="$value"
+                    ;;
+            esac
+        done < "$CONFIG_FILE"
+    fi
+}
+
+# Load configuration at script start
+load_config
+
+# Telegram configuration (these will be overridden by load_config if present)
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+
 # ANSI color codes
 COLOR_RED='\033[0;31m'
 COLOR_GREEN='\033[0;32m'
@@ -242,8 +274,16 @@ backup_repo()
 		fi
 	else
 		log_error "Backup failed"
-		cat /tmp/restic-backup-$$.json
+		local error_output=$(cat /tmp/restic-backup-$$.json)
 		rm -f /tmp/restic-backup-$$.json
+
+		# Send Telegram notification for backup failure
+		local telegram_message="❌ <b>Backup Failed</b>\n"
+		telegram_message+="📦 Repository: <code>${repo_name}</code>\n"
+		telegram_message+="🔗 Destination: <code>${destination}</code>\n\n"
+		telegram_message+="⚠️ Error output:\n<pre>${error_output}</pre>"
+		send_telegram "$telegram_message"
+
 		return 1
 	fi
 	
@@ -457,6 +497,39 @@ install_script()
 
 	# Create config directory if it doesn't exist
 	mkdir -p "$CONFIG_DIR"
+
+	# Configure Telegram notifications
+	read -r -p "Enter Telegram Bot Token for notifications (leave empty to skip): " bot_token
+	if [ -n "$bot_token" ]; then
+		read -r -p "Enter Telegram Chat ID: " chat_id
+		if [ -n "$chat_id" ]; then
+			if ! command -v curl &> /dev/null; then
+				echo "Installing curl for Telegram notifications..."
+				if command -v apt-get &> /dev/null; then
+					sudo apt-get update && sudo apt-get install -y curl
+				elif command -v dnf &> /dev/null; then
+					sudo dnf install -y curl
+				elif command -v pacman &> /dev/null; then
+					sudo pacman -S --noconfirm curl
+				else
+					echo "Warning: Could not install curl. Telegram notifications will not work."
+				fi
+			fi
+
+			# Save Telegram configuration
+			echo "TELEGRAM_BOT_TOKEN=\"$bot_token\"" > "$CONFIG_FILE"
+			echo "TELEGRAM_CHAT_ID=\"$chat_id\"" >> "$CONFIG_FILE"
+			echo "Telegram notifications configured successfully"
+
+			# Test Telegram configuration
+			local test_message="🔔 <b>Restic Backup Test</b>\n\nNotification system is working correctly!"
+			if send_telegram "$test_message"; then
+				echo "✅ Test notification sent successfully"
+			else
+				echo "❌ Failed to send test notification. Please check your Telegram configuration."
+			fi
+		fi
+	fi
 
 	# If repos file doesn't exist in the destination, create it
 	if [ ! -f "$REPOS_FILE" ]; then
@@ -1475,95 +1548,156 @@ configure_repos()
 	done
 }
 
-# Main command handler
-case "$1" in
-	"install")
-		install_script
-		;;
-	"config")
-		read_repos
-		configure_repos "$2"
-		;;
-	"init")
-		read_repos
-		if [ -z "$2" ]; then
-			init_all
-		else
-			init_repo "$2"
-		fi
-		;;
-	"backup")
-		read_repos
-		repo_name=""
-		pre_script=""
-		post_script=""
+# Function to send Telegram notifications
+send_telegram() {
+    local message="$1"
 
-		# Parse arguments
-		shift # skip the 'backup' command
-		while [[ $# -gt 0 ]]; do
-			case "$1" in
-				-pre-backup)
-					shift
-					pre_script="$1"
-					shift
-					;;
-				-post-backup)
-					shift
-					post_script="$1"
-					shift
-					;;
-				*)
-					if [ -z "$repo_name" ]; then
-						repo_name="$1"
-					fi
-					shift
-					;;
-			esac
-		done
+    if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+        log_warning "Telegram notification skipped: Bot token or Chat ID not configured"
+        return 1
+    fi
 
-		if [ -z "$repo_name" ]; then
-			backup_all "$pre_script" "$post_script"
-		else
-			backup_repo "$repo_name" "$pre_script" "$post_script"
-		fi
-		;;
-	"restore")
-		read_repos
-		handle_restore_command "$@"
-		;;
-	"crontab")
-		manage_crontab "$2"
-		;;
-	"update")
-		update_script
-		;;
-	"list")
-		read_repos
-		verbose="false"
-		repo_name=""
+    if ! command -v curl &> /dev/null; then
+        log_warning "Telegram notification skipped: 'curl' command not available"
+        return 1
+    fi
 
-		# Parse arguments
-		shift # skip the 'list' command
-		while [[ $# -gt 0 ]]; do
-			case "$1" in
-				-v | --verbose)
-					verbose="true"
-					shift
-					;;
-				*)
-					repo_name="$1"
-					shift
-					;;
-			esac
-		done
+    # Debug info
+    log_info "Sending Telegram notification with:"
+    log_info "Bot Token: ${TELEGRAM_BOT_TOKEN:0:20}... (truncated)"
+    log_info "Chat ID: $TELEGRAM_CHAT_ID"
 
-		if [ -z "$repo_name" ]; then
-			list_all_snapshots "$verbose"
-		else
-			list_repo_snapshots "$repo_name" "$verbose"
-		fi
-		;;
-	*)
-		show_usage
-		;;
-esac
+    # Verify bot token format
+    if [[ ! "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+        log_error "Invalid bot token format. Should be like '123456789:ABCdefGHIjklMNOPqrstuvwxyz'"
+        return 1
+    fi
+
+    # Escape special characters for JSON
+    message=$(echo "$message" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+
+    # First, test if the bot is valid
+    local bot_info
+    bot_info=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")
+    if ! echo "$bot_info" | grep -q '"ok":true'; then
+        log_error "Invalid bot token. Bot info request failed: $bot_info"
+        return 1
+    fi
+
+    local response
+    response=$(curl -s -X POST \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -H "Content-Type: application/json" \
+        -d "{\"chat_id\":\"${TELEGRAM_CHAT_ID}\",\"text\":\"${message}\",\"parse_mode\":\"HTML\"}")
+
+    if echo "$response" | grep -q '"ok":true'; then
+        log_info "Telegram notification sent successfully"
+        return 0
+    else
+        log_error "Failed to send Telegram notification: $response"
+        return 1
+    fi
+}
+
+# Load email configuration if exists
+
+# Main entry point
+main() {
+    # Check for help command
+    case "$1" in
+        -h|--help|"")
+            show_usage
+            ;;
+    esac
+
+    # Get command (first argument)
+    local command="$1"
+    shift  # Remove first argument
+
+    case "$command" in
+        install)
+            install_script
+            ;;
+        config)
+            configure_repos "$1"
+            ;;
+        init)
+            if [ $# -eq 0 ]; then
+                init_all
+            else
+                init_repo "$1"
+            fi
+            ;;
+        backup)
+            # Parse additional arguments for pre/post scripts
+            local pre_script=""
+            local post_script=""
+            local repo_name=""
+
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    -pre-backup)
+                        shift
+                        pre_script="$1"
+                        ;;
+                    -post-backup)
+                        shift
+                        post_script="$1"
+                        ;;
+                    *)
+                        if [ -z "$repo_name" ]; then
+                            repo_name="$1"
+                        fi
+                        ;;
+                esac
+                shift
+            done
+
+            if [ -z "$repo_name" ]; then
+                backup_all "$pre_script" "$post_script"
+            else
+                backup_repo "$repo_name" "$pre_script" "$post_script"
+            fi
+            ;;
+        restore)
+            handle_restore_command "$@"
+            ;;
+        list)
+            local verbose=false
+            local repo_name=""
+
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    -v)
+                        verbose=true
+                        ;;
+                    *)
+                        if [ -z "$repo_name" ]; then
+                            repo_name="$1"
+                        fi
+                        ;;
+                esac
+                shift
+            done
+
+            if [ -z "$repo_name" ]; then
+                list_all_snapshots "$verbose"
+            else
+                list_repo_snapshots "$repo_name" "$verbose"
+            fi
+            ;;
+        crontab)
+            manage_crontab "$1"
+            ;;
+        update)
+            update_script
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            show_usage
+            ;;
+    esac
+}
+
+# Execute main function with all arguments
+main "$@"
