@@ -26,8 +26,8 @@ A comprehensive wrapper script for [Restic](https://restic.net) backup managemen
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/restic.git
-cd restic
+git clone https://github.com/numbor/restic-wrapper.git
+cd restic-wrapper/
 
 # Make the script executable
 chmod +x restic.sh
