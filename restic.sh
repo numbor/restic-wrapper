@@ -19,7 +19,7 @@
 # Configuration
 CONFIG_DIR="$HOME/.config"
 REPOS_FILE="$CONFIG_DIR/restic.json"
-LOG_FILE="/var/log/restic-backup.log"
+LOG_FILE="/var/log/restic.log"
 
 # Load Telegram configuration from JSON
 load_telegram_config() {
