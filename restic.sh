@@ -18,7 +18,7 @@
 
 # Configuration
 CONFIG_DIR="$HOME/.config"
-REPOS_FILE="$CONFIG_DIR/backup-repos.json"
+REPOS_FILE="$CONFIG_DIR/restic.json"
 LOG_FILE="/var/log/restic-backup.log"
 
 # Load Telegram configuration from JSON
