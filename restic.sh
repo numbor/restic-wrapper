@@ -1197,6 +1197,12 @@ show_usage() {
     echo "      -d  Delete all backup schedules"
     echo
 
+    echo "  gui"
+    echo "    Launch interactive GUI interface"
+    echo "    Provides a menu-driven interface for all operations"
+    echo "    Requires whiptail (usually pre-installed on most systems)"
+    echo
+
     echo "  -h, --help"
     echo "    Show this help message"
     echo
@@ -1220,6 +1226,9 @@ show_usage() {
     echo
     echo "  # Schedule automatic backups"
     echo "  restic.sh crontab"
+    echo
+    echo "  # Use interactive GUI interface"
+    echo "  restic.sh gui"
     echo
 
     echo "CONFIGURATION:"
@@ -1599,12 +1608,451 @@ send_telegram() {
 
 # Load email configuration if exists
 
+# Function to show GUI interface using whiptail
+show_gui_interface() {
+    # Check if whiptail is available
+    if ! command -v whiptail >/dev/null 2>&1; then
+        log_error "whiptail is not installed. Please install it to use the GUI interface."
+        log_info "On Ubuntu/Debian: sudo apt-get install whiptail"
+        log_info "On CentOS/RHEL: sudo yum install newt"
+        return 1
+    fi
+
+    while true; do
+        # Main menu
+        local choice
+        choice=$(whiptail --title "Restic Backup Manager" \
+            --menu "Select an action:" 20 70 10 \
+            "1" "[*] Show configured repositories" \
+            "2" "[+] Configure repositories" \
+            "3" "[!] Initialize repository" \
+            "4" "[>] Backup repositories" \
+            "5" "[<] Restore from backup" \
+            "6" "[-] List snapshots" \
+            "7" "[@] Manage crontab" \
+            "8" "[~] Update script" \
+            "9" "[?] Show help" \
+            "0" "[X] Exit" \
+            3>&1 1>&2 2>&3)
+
+        # Check if user cancelled
+        if [ $? -ne 0 ]; then
+            break
+        fi
+
+        case "$choice" in
+            "1")
+                show_repos_gui
+                ;;
+            "2")
+                configure_repos_gui
+                ;;
+            "3")
+                init_repo_gui
+                ;;
+            "4")
+                backup_gui
+                ;;
+            "5")
+                restore_gui
+                ;;
+            "6")
+                list_snapshots_gui
+                ;;
+            "7")
+                crontab_gui
+                ;;
+            "8")
+                if whiptail --title "Update Script" --yesno "Do you want to update the script to the latest version?" 10 60; then
+                    update_script
+                fi
+                ;;
+            "9")
+                show_usage | whiptail --title "Help" --textbox /dev/stdin 30 80
+                ;;
+            "0")
+                break
+                ;;
+        esac
+    done
+}
+
+# GUI function to show repositories
+show_repos_gui() {
+    if [ ! -f "$REPOS_FILE" ]; then
+        whiptail --title "No Configuration" --msgbox "No repositories configured yet.\nUse 'Configure repositories' to add some." 10 50
+        return
+    fi
+
+    local total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
+    if [ "$total_repos" -eq 0 ]; then
+        whiptail --title "No Repositories" --msgbox "No repositories configured yet.\nUse 'Configure repositories' to add some." 10 50
+        return
+    fi
+
+    local repo_details=""
+    local index=0
+    
+    while [ $index -lt $total_repos ]; do
+        local repo_name=$(jq -r ".repositories[$index].name" "$REPOS_FILE")
+        local dest=$(jq -r ".repositories[$index].destination" "$REPOS_FILE")
+        local paths=$(jq -r ".repositories[$index].paths | join(\", \")" "$REPOS_FILE")
+        local last=$(jq -r ".repositories[$index].retention.last" "$REPOS_FILE")
+        local daily=$(jq -r ".repositories[$index].retention.daily" "$REPOS_FILE")
+        local weekly=$(jq -r ".repositories[$index].retention.weekly" "$REPOS_FILE")
+        local monthly=$(jq -r ".repositories[$index].retention.monthly" "$REPOS_FILE")
+        
+        repo_details="${repo_details}Repository: $repo_name\n"
+        repo_details="${repo_details}Destination: $dest\n"
+        repo_details="${repo_details}Backup paths: $paths\n"
+        repo_details="${repo_details}Retention: Last=$last, Daily=$daily, Weekly=$weekly, Monthly=$monthly\n"
+        
+        if [ $index -lt $((total_repos - 1)) ]; then
+            repo_details="${repo_details}\n--- --- --- --- --- --- --- --- --- --- --- --- --- ---\n\n"
+        fi
+        
+        index=$((index + 1))
+    done
+
+    whiptail --title "Configured Repositories ($total_repos)" --scrolltext --msgbox "$repo_details" 25 90
+}
+
+# GUI function to configure repositories
+configure_repos_gui() {
+    while true; do
+        local choice
+        choice=$(whiptail --title "Repository Configuration" \
+            --menu "Select an action:" 15 60 6 \
+            "1" "Add new repository" \
+            "2" "Edit existing repository" \
+            "3" "Remove repository" \
+            "4" "Show current configuration" \
+            "5" "Back to main menu" \
+            3>&1 1>&2 2>&3)
+
+        if [ $? -ne 0 ] || [ "$choice" = "5" ]; then
+            break
+        fi
+
+        case "$choice" in
+            "1")
+                add_repo_gui
+                ;;
+            "2")
+                edit_repo_gui
+                ;;
+            "3")
+                remove_repo_gui
+                ;;
+            "4")
+                show_repos_gui
+                ;;
+        esac
+    done
+}
+
+# GUI function to add repository
+add_repo_gui() {
+    local repo_name
+    local destination
+    local password
+    local paths
+
+    # Get repository name
+    repo_name=$(whiptail --title "Add Repository" --inputbox "Enter repository name:" 10 60 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ] || [ -z "$repo_name" ]; then
+        return
+    fi
+
+    # Get destination
+    destination=$(whiptail --title "Add Repository" --inputbox "Enter repository destination (local path or remote):" 10 60 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ] || [ -z "$destination" ]; then
+        return
+    fi
+
+    # Get password
+    password=$(whiptail --title "Add Repository" --passwordbox "Enter repository password:" 10 60 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ] || [ -z "$password" ]; then
+        return
+    fi
+
+    # Get backup paths
+    paths=$(whiptail --title "Add Repository" --inputbox "Enter backup paths (separated by spaces):\nExample: /home/user /etc" 12 60 3>&1 1>&2 2>&3)
+    if [ $? -ne 0 ] || [ -z "$paths" ]; then
+        return
+    fi
+
+    # Create repository configuration
+    mkdir -p "$CONFIG_DIR"
+    if [ ! -f "$REPOS_FILE" ]; then
+        echo '{"repositories": []}' > "$REPOS_FILE"
+    fi
+
+    # Convert paths to JSON array
+    local paths_json="[]"
+    for path in $paths; do
+        paths_json=$(echo "$paths_json" | jq ". += [\"$path\"]")
+    done
+
+    # Add repository to configuration
+    local new_repo
+    new_repo=$(jq -n --arg name "$repo_name" --arg dest "$destination" --arg pass "$password" --argjson paths "$paths_json" \
+        '{name: $name, destination: $dest, password: $pass, paths: $paths}')
+    
+    jq ".repositories += [$new_repo]" "$REPOS_FILE" > "$REPOS_FILE.tmp" && mv "$REPOS_FILE.tmp" "$REPOS_FILE"
+    
+    whiptail --title "Success" --msgbox "Repository '$repo_name' added successfully!" 10 50
+}
+
+# GUI function to edit repository
+edit_repo_gui() {
+    if [ ! -f "$REPOS_FILE" ]; then
+        whiptail --title "No Configuration" --msgbox "No repositories configured yet." 10 50
+        return
+    fi
+
+    local total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
+    if [ "$total_repos" -eq 0 ]; then
+        whiptail --title "No Repositories" --msgbox "No repositories configured yet." 10 50
+        return
+    fi
+
+    # Create menu options for repository selection
+    local menu_options=()
+    local index=0
+    while IFS= read -r repo_name; do
+        menu_options+=("$repo_name" "Edit $repo_name")
+        index=$((index + 1))
+    done < <(jq -r '.repositories[].name' "$REPOS_FILE")
+
+    local choice
+    choice=$(whiptail --title "Edit Repository" \
+        --menu "Select repository to edit:" 15 60 8 \
+        "${menu_options[@]}" \
+        3>&1 1>&2 2>&3)
+
+    if [ $? -ne 0 ]; then
+        return
+    fi
+
+    whiptail --title "Edit Repository" --msgbox "Editing repository '$choice' is not yet implemented in GUI mode.\nPlease use command line mode for advanced editing." 10 60
+}
+
+# GUI function to remove repository
+remove_repo_gui() {
+    if [ ! -f "$REPOS_FILE" ]; then
+        whiptail --title "No Configuration" --msgbox "No repositories configured yet." 10 50
+        return
+    fi
+
+    local total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
+    if [ "$total_repos" -eq 0 ]; then
+        whiptail --title "No Repositories" --msgbox "No repositories configured yet." 10 50
+        return
+    fi
+
+    # Create menu options for repository selection
+    local menu_options=()
+    local index=0
+    while IFS= read -r repo_name; do
+        menu_options+=("$repo_name" "Remove $repo_name")
+        index=$((index + 1))
+    done < <(jq -r '.repositories[].name' "$REPOS_FILE")
+
+    local choice
+    choice=$(whiptail --title "Remove Repository" \
+        --menu "Select repository to remove:" 15 60 8 \
+        "${menu_options[@]}" \
+        3>&1 1>&2 2>&3)
+
+    if [ $? -ne 0 ]; then
+        return
+    fi
+
+    if whiptail --title "Confirm Removal" --yesno "Are you sure you want to remove repository '$choice'?\nThis will only remove it from configuration, not delete the actual backup data." 12 60; then
+        # Remove repository from configuration
+        jq "del(.repositories[] | select(.name == \"$choice\"))" "$REPOS_FILE" > "$REPOS_FILE.tmp" && mv "$REPOS_FILE.tmp" "$REPOS_FILE"
+        whiptail --title "Success" --msgbox "Repository '$choice' removed successfully!" 10 50
+    fi
+}
+
+# GUI function to initialize repository
+init_repo_gui() {
+    if [ ! -f "$REPOS_FILE" ]; then
+        whiptail --title "No Configuration" --msgbox "No repositories configured yet.\nUse 'Configure repositories' to add some." 10 50
+        return
+    fi
+
+    local total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
+    if [ "$total_repos" -eq 0 ]; then
+        whiptail --title "No Repositories" --msgbox "No repositories configured yet." 10 50
+        return
+    fi
+
+    # Create menu options
+    local menu_options=()
+    menu_options+=("all" "Initialize all repositories")
+    
+    local index=0
+    while IFS= read -r repo_name; do
+        menu_options+=("$repo_name" "Initialize $repo_name")
+        index=$((index + 1))
+    done < <(jq -r '.repositories[].name' "$REPOS_FILE")
+
+    local choice
+    choice=$(whiptail --title "Initialize Repository" \
+        --menu "Select repository to initialize:" 15 60 8 \
+        "${menu_options[@]}" \
+        3>&1 1>&2 2>&3)
+
+    if [ $? -ne 0 ]; then
+        return
+    fi
+
+    if [ "$choice" = "all" ]; then
+        if whiptail --title "Confirm" --yesno "Initialize all repositories?" 10 50; then
+            init_all
+        fi
+    else
+        if whiptail --title "Confirm" --yesno "Initialize repository '$choice'?" 10 50; then
+            init_repo "$choice"
+        fi
+    fi
+}
+
+# GUI function for backup
+backup_gui() {
+    if [ ! -f "$REPOS_FILE" ]; then
+        whiptail --title "No Configuration" --msgbox "No repositories configured yet.\nUse 'Configure repositories' to add some." 10 50
+        return
+    fi
+
+    local total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
+    if [ "$total_repos" -eq 0 ]; then
+        whiptail --title "No Repositories" --msgbox "No repositories configured yet." 10 50
+        return
+    fi
+
+    # Create menu options
+    local menu_options=()
+    menu_options+=("all" "Backup all repositories")
+    
+    local index=0
+    while IFS= read -r repo_name; do
+        menu_options+=("$repo_name" "Backup $repo_name")
+        index=$((index + 1))
+    done < <(jq -r '.repositories[].name' "$REPOS_FILE")
+
+    local choice
+    choice=$(whiptail --title "Backup" \
+        --menu "Select repository to backup:" 15 60 8 \
+        "${menu_options[@]}" \
+        3>&1 1>&2 2>&3)
+
+    if [ $? -ne 0 ]; then
+        return
+    fi
+
+    if [ "$choice" = "all" ]; then
+        if whiptail --title "Confirm" --yesno "Backup all repositories?" 10 50; then
+            backup_all
+        fi
+    else
+        if whiptail --title "Confirm" --yesno "Backup repository '$choice'?" 10 50; then
+            backup_repo "$choice"
+        fi
+    fi
+}
+
+# GUI function for listing snapshots
+list_snapshots_gui() {
+    if [ ! -f "$REPOS_FILE" ]; then
+        whiptail --title "No Configuration" --msgbox "No repositories configured yet.\nUse 'Configure repositories' to add some." 10 50
+        return
+    fi
+
+    local total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
+    if [ "$total_repos" -eq 0 ]; then
+        whiptail --title "No Repositories" --msgbox "No repositories configured yet." 10 50
+        return
+    fi
+
+    # Create menu options
+    local menu_options=()
+    menu_options+=("all" "List all snapshots")
+    
+    local index=0
+    while IFS= read -r repo_name; do
+        menu_options+=("$repo_name" "List snapshots for $repo_name")
+        index=$((index + 1))
+    done < <(jq -r '.repositories[].name' "$REPOS_FILE")
+
+    local choice
+    choice=$(whiptail --title "List Snapshots" \
+        --menu "Select repository:" 15 60 8 \
+        "${menu_options[@]}" \
+        3>&1 1>&2 2>&3)
+
+    if [ $? -ne 0 ]; then
+        return
+    fi
+
+    local verbose=false
+    if whiptail --title "Verbose Output" --yesno "Show detailed information?" 10 50; then
+        verbose=true
+    fi
+
+    if [ "$choice" = "all" ]; then
+        list_all_snapshots "$verbose" | whiptail --title "All Snapshots" --textbox /dev/stdin 20 80
+    else
+        list_repo_snapshots "$choice" "$verbose" | whiptail --title "Snapshots for $choice" --textbox /dev/stdin 20 80
+    fi
+}
+
+# GUI function for restore
+restore_gui() {
+    whiptail --title "Restore" --msgbox "Restore functionality in GUI mode is complex.\nPlease use command line mode for restore operations:\n\nrestic.sh restore <repo-name> <snapshot-id> [options]" 12 60
+}
+
+# GUI function for crontab management
+crontab_gui() {
+    local choice
+    choice=$(whiptail --title "Crontab Management" \
+        --menu "Select an action:" 12 60 4 \
+        "1" "Show current crontab" \
+        "2" "Setup automatic backup" \
+        "3" "Disable automatic backup" \
+        "4" "Back to main menu" \
+        3>&1 1>&2 2>&3)
+
+    if [ $? -ne 0 ] || [ "$choice" = "4" ]; then
+        return
+    fi
+
+    case "$choice" in
+        "1")
+            manage_crontab "-s" | whiptail --title "Current Crontab" --textbox /dev/stdin 15 70
+            ;;
+        "2")
+            if whiptail --title "Setup Crontab" --yesno "Setup automatic daily backup at 2:00 AM?" 10 50; then
+                manage_crontab
+            fi
+            ;;
+        "3")
+            if whiptail --title "Disable Crontab" --yesno "Remove automatic backup from crontab?" 10 50; then
+                manage_crontab "-d"
+            fi
+            ;;
+    esac
+}
+
 # Main entry point
 main() {
     # Check for help command
     case "$1" in
         -h|--help|"")
             show_usage
+            return 0
             ;;
     esac
 
@@ -1689,6 +2137,9 @@ main() {
             ;;
         update)
             update_script
+            ;;
+        gui)
+            show_gui_interface
             ;;
         *)
             log_error "Unknown command: $command"
