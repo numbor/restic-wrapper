@@ -34,20 +34,20 @@ TELEGRAM_BOT_TOKEN=""
 TELEGRAM_CHAT_ID=""
 load_telegram_config
 
-# ANSI color codes
-COLOR_RED='\033[0;31m'
-COLOR_GREEN='\033[0;32m'
-COLOR_YELLOW='\033[1;33m'
-COLOR_BLUE='\033[0;34m'
-COLOR_PURPLE='\033[0;35m'
-COLOR_CYAN='\033[0;36m'
-COLOR_RESET='\033[0m'
+# ANSI color codes (disabled)
+COLOR_RED=''
+COLOR_GREEN=''
+COLOR_YELLOW=''
+COLOR_BLUE=''
+COLOR_PURPLE=''
+COLOR_CYAN=''
+COLOR_RESET=''
 
-# Print colored messages
-log_info() { echo -e "${COLOR_CYAN}[INFO]${COLOR_RESET} $1"; }
-log_success() { echo -e "${COLOR_GREEN}[SUCCESS]${COLOR_RESET} $1"; }
-log_warning() { echo -e "${COLOR_YELLOW}[WARNING]${COLOR_RESET} $1"; }
-log_error() { echo -e "${COLOR_RED}[ERROR]${COLOR_RESET} $1"; }
+# Print messages without colors
+log_info() { echo "[INFO] $1"; }
+log_success() { echo "[SUCCESS] $1"; }
+log_warning() { echo "[WARNING] $1"; }
+log_error() { echo "[ERROR] $1"; }
 
 # Check if jq is installed
 check_jq_binary()
@@ -223,7 +223,7 @@ backup_repo()
 	done < <(echo "$paths")
 
 	# Execute backup with progress spinner
-	log_info "Starting backup for repository: ${COLOR_CYAN}$repo_name${COLOR_RESET}"
+	log_info "Starting backup for repository: $repo_name"
 	log_info "Destination: $destination"
 	
 	local pid
@@ -329,7 +329,7 @@ backup_all() {
     local current=0
     while IFS= read -r repo_name; do
         current=$((current + 1))
-        echo -e "\n${COLOR_CYAN}[$current/$total_repos]${COLOR_RESET} Processing repository: ${COLOR_CYAN}$repo_name${COLOR_RESET}"
+        echo "\n[$current/$total_repos] Processing repository: $repo_name"
         echo "-------------------------------------------"
 
         if ! backup_repo "$repo_name" "$pre_script" "$post_script"; then
@@ -343,9 +343,7 @@ backup_all() {
         local bar_size=40
         local completed=$((progress * bar_size / 100))
         local remaining=$((bar_size - completed))
-        printf "${COLOR_GREEN}"
         printf "#%.0s" $(seq 1 $completed)
-        printf "${COLOR_RESET}"
         printf "%.0s-" $(seq 1 $remaining)
         echo
     done < <(jq -r '.repositories[] | .name' "$REPOS_FILE")
@@ -363,7 +361,7 @@ backup_all() {
     else
         log_warning "$failed_repos out of $total_repos repositories failed:"
         for repo in "${failed_repos_list[@]}"; do
-            echo -e "  ${COLOR_RED}✗${COLOR_RESET} $repo"
+            echo "  ✗ $repo"
         done
     fi
 
@@ -379,18 +377,18 @@ backup_all() {
 show_repos()
 {
     echo
-    echo -e "${COLOR_CYAN}📦 Configured Backup Repositories${COLOR_RESET}"
+    echo "📦 Configured Backup Repositories"
     echo "=================================="
 
     # Get total number of repositories
     local total_repos=$(jq -r '.repositories | length' "$REPOS_FILE")
     if [ "$total_repos" -eq 0 ]; then
-        echo -e "\n${COLOR_YELLOW}No repositories configured${COLOR_RESET}"
+        echo "\nNo repositories configured"
         echo "Use 'config' command to add repositories"
         return 0
     fi
 
-    echo -e "\nFound ${COLOR_CYAN}$total_repos${COLOR_RESET} configured repositories\n"
+    echo "\nFound $total_repos configured repositories\n"
 
     # Get all repositories and iterate through them
     local index=0
@@ -402,7 +400,7 @@ show_repos()
         dest=$(echo "$repo" | jq -r '.destination')
 
         # Print repository header with index
-        echo -e "${COLOR_CYAN}[$index]${COLOR_RESET} Repository: ${COLOR_CYAN}$name${COLOR_RESET}"
+        echo "[$index] Repository: $name"
         echo "    └─ 🔗 Destination: $dest"
 
         # Get and print latest backup info
@@ -414,7 +412,7 @@ show_repos()
         if [ "$latest_snap" != "No backups yet" ]; then
             echo "    └─ 🕒 Latest backup: $latest_snap"
         else
-            echo -e "    └─ 🕒 Latest backup: ${COLOR_YELLOW}No backups yet${COLOR_RESET}"
+            echo "    └─ 🕒 Latest backup: No backups yet"
         fi
 
         # Print paths with status
@@ -422,9 +420,9 @@ show_repos()
         echo "$repo" | jq -r '.paths[]' | while read -r path; do
             path="${path/#\~/$HOME}"
             if [ -e "$path" ]; then
-                echo -e "       └─ ${COLOR_GREEN}✓${COLOR_RESET} $path"
+                echo "       └─ ✓ $path"
             else
-                echo -e "       └─ ${COLOR_RED}✗${COLOR_RESET} $path ${COLOR_RED}(not found)${COLOR_RESET}"
+                echo "       └─ ✗ $path (not found)"
             fi
         done
 
@@ -456,7 +454,7 @@ show_repos()
 
         # Print separator between repositories
         if [ $((index + 1)) -lt "$total_repos" ]; then
-            echo -e "\n${COLOR_BLUE}────────────────────────────────────${COLOR_RESET}\n"
+            echo "\n────────────────────────────────────\n"
         fi
 
         index=$((index + 1))
@@ -1124,33 +1122,33 @@ update_script() {
 
 # Function to show usage help
 show_usage() {
-    echo -e "${COLOR_CYAN}Restic Backup Manager${COLOR_RESET} - A comprehensive wrapper for Restic backup management"
+    echo "Restic Backup Manager - A comprehensive wrapper for Restic backup management"
     echo -e "Version: 1.0.0\n"
 
-    echo -e "${COLOR_CYAN}USAGE:${COLOR_RESET}"
+    echo "USAGE:"
     echo "  restic.sh <command> [options]"
     echo
 
-    echo -e "${COLOR_CYAN}COMMANDS:${COLOR_RESET}"
-    echo -e "  ${COLOR_GREEN}install${COLOR_RESET}"
+    echo "COMMANDS:"
+    echo "  install"
     echo "    Install the script and initialize configuration files"
     echo "    This will create default config files in $CONFIG_DIR"
     echo
 
-    echo -e "  ${COLOR_GREEN}config${COLOR_RESET} [-s]"
+    echo "  config [-s]"
     echo "    Configure backup repositories interactively"
     echo "    Options:"
     echo "      -s  Show current configuration"
     echo
 
-    echo -e "  ${COLOR_GREEN}init${COLOR_RESET} [repo-name]"
+    echo "  init [repo-name]"
     echo "    Initialize a new repository or all repositories"
     echo "    Arguments:"
     echo "      repo-name  Optional: Initialize specific repository"
     echo "                If omitted, initializes all repositories"
     echo
 
-    echo -e "  ${COLOR_GREEN}backup${COLOR_RESET} [repo-name] [-pre-backup script] [-post-backup script]"
+    echo "  backup [repo-name] [-pre-backup script] [-post-backup script]"
     echo "    Perform backup according to configuration"
     echo "    Arguments:"
     echo "      repo-name        Optional: Backup specific repository"
@@ -1166,7 +1164,7 @@ show_usage() {
     echo "      - Detailed backup statistics"
     echo
 
-    echo -e "  ${COLOR_GREEN}restore${COLOR_RESET} <repo-name> <snapshot-id> [-f file1 file2 ...] [-g] [-p path]"
+    echo "  restore <repo-name> <snapshot-id> [-f file1 file2 ...] [-g] [-p path]"
     echo "    Restore files from a backup"
     echo "    Arguments:"
     echo "      repo-name    Name of the repository to restore from"
@@ -1178,7 +1176,7 @@ show_usage() {
     echo "      -p  Target path for restoring files (default: current directory)"
     echo
 
-    echo -e "  ${COLOR_GREEN}list${COLOR_RESET} [repo-name] [-v]"
+    echo "  list [repo-name] [-v]"
     echo "    List snapshots from repositories"
     echo "    Arguments:"
     echo "      repo-name  Optional: List snapshots from specific repository"
@@ -1186,24 +1184,24 @@ show_usage() {
     echo "      -v  Show detailed information including statistics"
     echo
 
-    echo -e "  ${COLOR_GREEN}update${COLOR_RESET}"
+    echo "  update"
     echo "    Update this script to the latest version"
     echo "    Downloads the latest version from the Git repository and"
     echo "    creates a backup of the current version before updating"
     echo
 
-    echo -e "  ${COLOR_GREEN}crontab${COLOR_RESET} [-s|-d]"
+    echo "  crontab [-s|-d]"
     echo "    Manage backup scheduling"
     echo "    Options:"
     echo "      -s  Show current backup schedules"
     echo "      -d  Delete all backup schedules"
     echo
 
-    echo -e "  ${COLOR_GREEN}-h, --help${COLOR_RESET}"
+    echo "  -h, --help"
     echo "    Show this help message"
     echo
 
-    echo -e "${COLOR_CYAN}EXAMPLES:${COLOR_RESET}"
+    echo "EXAMPLES:"
     echo "  # Install and configure"
     echo "  restic.sh install"
     echo "  restic.sh config"
@@ -1224,7 +1222,7 @@ show_usage() {
     echo "  restic.sh crontab"
     echo
 
-    echo -e "${COLOR_CYAN}CONFIGURATION:${COLOR_RESET}"
+    echo "CONFIGURATION:"
     echo "  Config files are stored in: $CONFIG_DIR"
     echo "  - Repository settings: $REPOS_FILE"
     echo "  - Backup logs: $LOG_FILE"
