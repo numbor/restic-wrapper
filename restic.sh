@@ -1107,7 +1107,8 @@ manage_crontab()
 # Function to update the script from remote repository
 update_script() {
     # local remote_url="http://git.home.lan:3000/marco/restic/raw/branch/main/restic.sh"
-    local remote_url="https://raw.githubusercontent.com/numbor/restic-wrapper/refs/heads/main/restic.sh"
+    # local remote_url="https://raw.githubusercontent.com/numbor/restic-wrapper/refs/heads/main/restic.sh"
+    # local remote_url="https://raw.githubusercontent.com/numbor/restic-wrapper/main/restic.sh"
     local temp_file="/tmp/restic.sh.new"
     local script_path="$0"
     local backup_path="${script_path}.backup"
