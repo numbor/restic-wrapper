@@ -996,6 +996,61 @@ manage_crontab()
 	fi
 
 	# Seleziona la schedulazione
+	select_schedule() {
+		echo "Seleziona la frequenza di backup:"
+		echo "1) Ogni ora"
+		echo "2) Ogni 6 ore"
+		echo "3) Ogni 12 ore"
+		echo "4) Giornaliero (alle 02:00)"
+		echo "5) Settimanale (Domenica alle 02:00)"
+		echo "6) Mensile (1° del mese alle 02:00)"
+		echo "7) Personalizzato"
+		echo
+		read -p "Inserisci la tua scelta [1-7]: " choice
+
+		case "$choice" in
+			1)
+				schedule="0 * * * *"
+				echo "✅ Schedulazione impostata: ogni ora"
+				;;
+			2)
+				schedule="0 */6 * * *"
+				echo "✅ Schedulazione impostata: ogni 6 ore"
+				;;
+			3)
+				schedule="0 */12 * * *"
+				echo "✅ Schedulazione impostata: ogni 12 ore"
+				;;
+			4)
+				schedule="0 2 * * *"
+				echo "✅ Schedulazione impostata: giornaliero alle 02:00"
+				;;
+			5)
+				schedule="0 2 * * 0"
+				echo "✅ Schedulazione impostata: settimanale (Domenica alle 02:00)"
+				;;
+			6)
+				schedule="0 2 1 * *"
+				echo "✅ Schedulazione impostata: mensile (1° del mese alle 02:00)"
+				;;
+			7)
+				echo "Inserisci la schedulazione cron personalizzata (formato: min ora giorno mese giorno_settimana):"
+				read -p "Esempio: '0 3 * * *' per ogni giorno alle 03:00: " custom_schedule
+				if [[ "$custom_schedule" =~ ^[0-9*,/-]+[[:space:]]+[0-9*,/-]+[[:space:]]+[0-9*,/-]+[[:space:]]+[0-9*,/-]+[[:space:]]+[0-9*,/-]+$ ]]; then
+					schedule="$custom_schedule"
+					echo "✅ Schedulazione personalizzata impostata: $schedule"
+				else
+					echo "❌ Formato non valido. Usando schedulazione giornaliera predefinita."
+					schedule="0 2 * * *"
+				fi
+				;;
+			*)
+				echo "❌ Scelta non valida. Usando schedulazione giornaliera predefinita."
+				schedule="0 2 * * *"
+				;;
+		esac
+	}
+
 	select_schedule
 
 	# Crea il comando crontab con logging
@@ -1003,7 +1058,7 @@ manage_crontab()
 	# local log_cmd='date "+[%Y-%m-%d %H:%M:%S]" >> '"$LOG_FILE"' 2>&1 && '
 	local log_cmd=''
 	log_cmd+="$script_path backup >> $LOG_FILE 2>&1"
-	local cron_cmd="$schedule $log_cmd"
+	local cron_cmd="$schedule /bin/bash -lc \"$log_cmd\""
 
 	echo
 	echo "Il seguente comando verrà aggiunto al crontab:"
